@@ -2,26 +2,21 @@
 
 namespace MHz\MysqlVector;
 
-use KMeans\Space;
-
 class VectorTable
 {
     private string $name;
     private int $dimension;
     private string $engine;
-    private array $centroidCache;
     private \mysqli $mysqli;
 
     const SQL_COSIM_FUNCTION = "
 CREATE FUNCTION COSIM(v1 JSON, v2 JSON) RETURNS FLOAT DETERMINISTIC BEGIN DECLARE sim FLOAT DEFAULT 0; DECLARE i INT DEFAULT 0; DECLARE len INT DEFAULT JSON_LENGTH(v1); IF JSON_LENGTH(v1) != JSON_LENGTH(v2) THEN RETURN NULL; END IF; WHILE i < len DO SET sim = sim + (JSON_EXTRACT(v1, CONCAT('$[', i, ']')) * JSON_EXTRACT(v2, CONCAT('$[', i, ']'))); SET i = i + 1; END WHILE; RETURN sim; END";
-    private int $quantizationSampleSize;
 
     /**
      * Instantiate a new VectorTable object.
      * @param \mysqli $mysqli The mysqli connection
      * @param string $name Name of the table.
      * @param int $dimension Dimension of the vectors.
-     * @param int $quantizationSampleSize Number of vectors to use for quantization.
      * @param string $engine The storage engine to use for the tables
      */
     public function __construct(\mysqli $mysqli, string $name, int $dimension = 384, string $engine = 'InnoDB')
@@ -30,7 +25,6 @@ CREATE FUNCTION COSIM(v1 JSON, v2 JSON) RETURNS FLOAT DETERMINISTIC BEGIN DECLAR
         $this->name = $name;
         $this->dimension = $dimension;
         $this->engine = $engine;
-        $this->centroidCache = [];
     }
 
     public function getVectorTableName(): string
@@ -314,17 +308,6 @@ CREATE FUNCTION COSIM(v1 JSON, v2 JSON) RETURNS FLOAT DETERMINISTIC BEGIN DECLAR
     }
 
 
-    private function dotProduct(array $vectorA, array $vectorB): float {
-        $product = 0;
-
-        foreach ($vectorA as $position => $value) {
-            if (isset($vectorB[$position])) {
-                $product += $value * $vectorB[$position];
-            }
-        }
-
-        return $product;
-    }
 
     /**
      * Returns the number of vectors stored in the database

@@ -1,7 +1,7 @@
-# A Library for MySQL Vector Operations and Text Embeddings
+# A Library for MySQL Vector Operations
 
 ## Overview
-The `VectorTable` class is a PHP implementation designed to facilitate the storage, retrieval, and comparison of high-dimensional vectors in a MySQL database. This class utilizes MySQL JSON data types and a custom cosine similarity function (`COSIM`) to perform vector comparisons efficiently. 
+The `VectorTable` class is a PHP implementation designed to facilitate the storage, retrieval, and comparison of high-dimensional vectors in a MySQL database. This class utilizes MySQL JSON data types and a custom cosine similarity function (`COSIM`) to perform vector comparisons efficiently.
 
 ### Search Performance
 Vectors are binary quantized upon insertion into the database to optimize search speed and reranked to improve accuracy.
@@ -21,7 +21,6 @@ Vectors | Time (seconds)
 - Calculate cosine similarity between vectors using a custom MySQL function.
 - Normalize vectors and handle vector operations such as insertion, deletion, and searching.
 - Support for vector quantization for optimized search operations.
-- Native PHP support for generating for text embeddings using the [BGE embedding model](https://huggingface.co/BAAI/bge-base-en-v1.5).
 
 ## Requirements
 - PHP 8.0 or higher.
@@ -84,22 +83,6 @@ Perform a search for vectors similar to a given vector using the cosine similari
 $similarVectors = $vectorTable->search($vector, $topN);
 ```
 
-## Text Embeddings
-The `Embedder` class calculates 384-dimensional text embeddings using the [BGE embedding model](https://huggingface.co/BAAI/bge-base-en-v1.5). The first time you instanciate the `Embedder` class, the ONNX runtime will be installed automatically.
-The maximum length of the input text is 512 characters. The `Embedder` class will automatically truncate the input text to 512 characters if it is longer than 512 characters.
-
-```php
-use MHz\MysqlVector\Nlp\Embedder;
-
-$embedder = new Embedder();
-
-// Calculate the embeddings for a batch of text
-$texts = ["Hello world!", "This is a test."];
-$embeddings = $embedder->embed($texts);
-
-print_r($embeddings[0][0]); // [0.1, 0.2, 0.3, ..., 0.384]
-print_r($embeddings[1][0]); // [0.1, 0.2, 0.3, ..., 0.384]
-```
 
 ## Contributions
 Contributions to this project are welcome. Please ensure that your code adheres to the existing coding standards and includes appropriate tests.
