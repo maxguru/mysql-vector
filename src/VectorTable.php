@@ -387,6 +387,11 @@ CREATE FUNCTION COSIM(v1 JSON, v2 JSON) RETURNS FLOAT DETERMINISTIC BEGIN DECLAR
         }
         $statement->close();
 
+        // Handle case where no candidates are found
+        if (empty($candidates)) {
+            return [];
+        }
+
         // Rerank candidates using cosine similarity
         $placeholders = implode(',', array_fill(0, count($candidates), '?'));
         $sql = "
