@@ -18,9 +18,28 @@ CREATE FUNCTION COSIM(v1 JSON, v2 JSON) RETURNS FLOAT DETERMINISTIC BEGIN DECLAR
      * @param string $name Name of the table.
      * @param int $dimension Dimension of the vectors.
      * @param string $engine The storage engine to use for the tables
+     * @throws \InvalidArgumentException If dimension exceeds maximum supported value
      */
     public function __construct(\mysqli $mysqli, string $name, int $dimension = 384, string $engine = 'InnoDB')
     {
+        // Maximum dimensions limited by InnoDB prefix index limit of 3072 bytes
+        // 3072 bytes * 8 bits/byte = 24,576 dimensions maximum
+        // Using a conservative limit to account for MySQL configuration variations
+        $maxDimensions = 24000;
+
+        if ($dimension <= 0) {
+            throw new \InvalidArgumentException("Dimension must be a positive integer, got: $dimension");
+        }
+
+        if ($dimension > $maxDimensions) {
+            $maxBytes = ceil($dimension / 8);
+            throw new \InvalidArgumentException(
+                "Dimension $dimension requires $maxBytes bytes for binary indexing, " .
+                "which exceeds MySQL's InnoDB prefix index limit of 3072 bytes. " .
+                "Maximum supported dimensions: $maxDimensions"
+            );
+        }
+
         $this->mysqli = $mysqli;
         $this->name = $name;
         $this->dimension = $dimension;
@@ -41,7 +60,7 @@ CREATE FUNCTION COSIM(v1 JSON, v2 JSON) RETURNS FLOAT DETERMINISTIC BEGIN DECLAR
                 vector JSON,
                 normalized_vector JSON,
                 magnitude DOUBLE,
-                binary_code BINARY(%d),
+                binary_code VARBINARY(%d),
                 created TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             ) ENGINE=%s;";
         $vectorsQuery = sprintf($vectorsQuery, $ifNotExists ? 'IF NOT EXISTS' : '', $this->getVectorTableName(), $binaryCodeLengthInBytes, $this->engine);
