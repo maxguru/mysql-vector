@@ -346,6 +346,12 @@ CREATE FUNCTION COSIM(v1 JSON, v2 JSON) RETURNS FLOAT DETERMINISTIC BEGIN DECLAR
         return $count;
     }
 
+    /**
+     * Calculate the Euclidean magnitude (L2 norm) of a vector
+     *
+     * @param array $vector Input vector
+     * @return float The magnitude ||v|| = sqrt(v₁² + v₂² + ... + vₙ²)
+     */
     private function getMagnitude(array $vector): float
     {
         $sumOfSquares = 0.0;
@@ -356,11 +362,21 @@ CREATE FUNCTION COSIM(v1 JSON, v2 JSON) RETURNS FLOAT DETERMINISTIC BEGIN DECLAR
     }
 
     /**
-     * Finds the vectors that are most similar to the given vector
-     * @param array $vector The vector to query for
-     * @param int $n The number of results to return
-     * @return array Array of results containing the id, similarity, and vector
-     * @throws \Exception
+     * Find vectors most similar to the given query vector using two-stage search
+     *
+     * Uses a two-stage algorithm for efficient similarity search:
+     * 1. Stage 1: Binary quantization with Hamming distance for fast filtering
+     * 2. Stage 2: Precise cosine similarity re-ranking of candidates
+     *
+     * @param array $vector Query vector to search for
+     * @param int $n Maximum number of results to return (default: 10)
+     * @return array Array of results, each containing:
+     *               - 'id': Vector ID
+     *               - 'vector': Original vector
+     *               - 'normalized_vector': L2-normalized vector
+     *               - 'magnitude': Vector magnitude
+     *               - 'similarity': Cosine similarity [-1, 1]
+     * @throws \Exception If database operations fail or invalid input
      */
     public function search(array $vector, int $n = 10): array
     {
