@@ -370,14 +370,12 @@ CREATE FUNCTION COSIM(v1 JSON, v2 JSON) RETURNS FLOAT DETERMINISTIC BEGIN DECLAR
 
         // Initial search using binary codes
         $statement = $this->mysqli->prepare("SELECT id, BIT_COUNT(binary_code ^ UNHEX(?)) AS hamming_distance FROM $tableName ORDER BY hamming_distance LIMIT $n");
-        $statement->bind_param('s', $binaryCode);
 
         if(!$statement) {
-            $e = new \Exception($this->mysqli->error);
-            $this->mysqli->rollback();
-            throw $e;
+            throw new \Exception("Failed to prepare Hamming distance query: " . $this->mysqli->error);
         }
 
+        $statement->bind_param('s', $binaryCode);
         $statement->execute();
         $statement->bind_result($vectorId, $hd);
 
