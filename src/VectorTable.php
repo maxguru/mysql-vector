@@ -348,12 +348,11 @@ CREATE FUNCTION COSIM(v1 JSON, v2 JSON) RETURNS FLOAT DETERMINISTIC BEGIN DECLAR
 
     private function getMagnitude(array $vector): float
     {
-        $sum = 0;
+        $sumOfSquares = 0.0;
         foreach ($vector as $value) {
-            $sum += $value * $value;
+            $sumOfSquares += $value * $value;
         }
-
-        return sqrt($sum);
+        return sqrt($sumOfSquares);
     }
 
     /**
