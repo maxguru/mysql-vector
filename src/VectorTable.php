@@ -362,7 +362,16 @@ CREATE FUNCTION COSIM(v1 JSON, v2 JSON) RETURNS FLOAT DETERMINISTIC BEGIN DECLAR
      * @return array Array of results containing the id, similarity, and vector
      * @throws \Exception
      */
-    public function search(array $vector, int $n = 10): array {
+    public function search(array $vector, int $n = 10): array
+    {
+        // Input validation
+        if (empty($vector)) {
+            throw new \InvalidArgumentException("Search vector cannot be empty");
+        }
+
+        if ($n <= 0) {
+            throw new \InvalidArgumentException("Number of results must be positive");
+        }
         $tableName = $this->getVectorTableName();
         $normalizedVector = $this->normalize($vector);
         $binaryCode = $this->vectorToHex($normalizedVector);
