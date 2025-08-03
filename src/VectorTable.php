@@ -153,9 +153,7 @@ CREATE FUNCTION COSIM(v1 JSON, v2 JSON) RETURNS FLOAT DETERMINISTIC BEGIN DECLAR
         $statement = $this->mysqli->prepare("SELECT COSIM(?, ?)");
 
         if(!$statement) {
-            $e = new \Exception($this->mysqli->error);
-            $this->mysqli->rollback();
-            throw $e;
+            throw new \Exception("Failed to prepare cosine similarity query: " . $this->mysqli->error);
         }
 
         $v1 = json_encode($v1);
@@ -420,9 +418,7 @@ CREATE FUNCTION COSIM(v1 JSON, v2 JSON) RETURNS FLOAT DETERMINISTIC BEGIN DECLAR
         $statement = $this->mysqli->prepare($sql);
 
         if(!$statement) {
-            $e = new \Exception($this->mysqli->error);
-            $this->mysqli->rollback();
-            throw $e;
+            throw new \Exception("Failed to prepare cosine similarity query: " . $this->mysqli->error);
         }
 
         $normalizedVector = json_encode($normalizedVector);
