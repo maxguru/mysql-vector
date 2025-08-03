@@ -458,21 +458,27 @@ CREATE FUNCTION COSIM(v1 JSON, v2 JSON) RETURNS FLOAT DETERMINISTIC BEGIN DECLAR
     }
 
     /**
-     * Normalize a vector
-     * @param array $vector The vector to normalize
-     * @param float|null $magnitude The magnitude of the vector. If not provided, it will be calculated.
-     * @param float $epsilon The epsilon value to use for normalization
-     * @return array The normalized vector
+     * Normalize a vector to unit length (L2 normalization)
+     *
+     * Converts a vector to unit length while preserving direction.
+     * For zero vectors, uses epsilon to avoid division by zero.
+     *
+     * @param array $vector Input vector to normalize
+     * @param float|null $magnitude Pre-calculated magnitude (optional, for efficiency)
+     * @param float $epsilon Small value to use for zero vectors (default: 1e-12)
+     * @return array Normalized vector with magnitude ≈ 1.0
      */
-    private function normalize(array $vector, ?float $magnitude = null, float $epsilon = 1e-10): array {
-        $magnitude = !empty($magnitude) ? $magnitude : $this->getMagnitude($vector);
-        if ($magnitude == 0) {
+    private function normalize(array $vector, ?float $magnitude = null, float $epsilon = 1e-12): array
+    {
+        $magnitude = $magnitude ?? $this->getMagnitude($vector);
+
+        // Handle zero and near-zero vectors with epsilon to avoid division by very small numbers
+        if (abs($magnitude) < $epsilon) {
             $magnitude = $epsilon;
         }
-        foreach ($vector as $key => $value) {
-            $vector[$key] = $value / $magnitude;
-        }
-        return $vector;
+
+        // Normalize: v_normalized = v / ||v||
+        return array_map(fn($component) => $component / $magnitude, $vector);
     }
 
     /**
