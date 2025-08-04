@@ -316,8 +316,6 @@ CREATE FUNCTION COSIM(v1 JSON, v2 JSON) RETURNS FLOAT DETERMINISTIC BEGIN DECLAR
         return $result;
     }
 
-
-
     /**
      * Returns the number of vectors stored in the database
      * @return int The number of vectors
