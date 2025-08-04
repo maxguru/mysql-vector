@@ -120,7 +120,7 @@ class PerformanceBenchmarkTest extends TestCase
     protected function tearDown(): void
     {
         // Clean up the database and close connection
-        $this->vectorTable->getConnection()->query("DROP TABLE IF EXISTS" . $this->vectorTable->getVectorTableName());
+        $this->vectorTable->getConnection()->query("DROP TABLE IF EXISTS " . $this->vectorTable->getVectorTableName());
         $this->vectorTable->getConnection()->query("DROP FUNCTION IF EXISTS COSIM");
         $this->vectorTable->getConnection()->close();
     }
