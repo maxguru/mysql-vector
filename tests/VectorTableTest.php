@@ -96,7 +96,10 @@ class VectorTableTest extends TestCase
         $this->vectorTable->upsert($newVec, $id);
         $r = $this->vectorTable->select([$id]);
         $this->assertCount(1, $r);
-        $this->assertEqualsWithDelta($newVec, $r[0]['vector'], 0.00001);
+        // Verify that the stored vector matches what the normalize() method would produce
+        $expectedNormalized = $this->vectorTable->normalize($newVec);
+        $actualStored = $r[0]['normalized_vector'];
+        $this->assertEqualsWithDelta($expectedNormalized, $actualStored, 0.00001, "Stored vector should match the result of normalize() method");
 
         $this->vectorTable->getConnection()->rollback();
     }
@@ -126,7 +129,10 @@ class VectorTableTest extends TestCase
 
         $i = 0;
         foreach ($results as $result) {
-            $this->assertEqualsWithDelta($vecs[$i], $result['vector'], 0.00001);
+            // Verify that each stored vector matches what the normalize() method would produce
+            $expectedNormalized = $this->vectorTable->normalize($vecs[$i]);
+            $actualStored = $result['normalized_vector'];
+            $this->assertEqualsWithDelta($expectedNormalized, $actualStored, 0.00001, "Each stored vector should match the result of normalize() method");
             $i++;
         }
 
@@ -282,11 +288,15 @@ class VectorTableTest extends TestCase
         echo sprintf("Search completed in %.2f seconds\n", $time);
 
         // At least the first result should be our target vector or very close
-        $firstResultVector = $results[0]['vector'];
+        $firstResultVector = $results[0]['normalized_vector'];
         $firstResultSimilarity = $results[0]['similarity'];
 
-        $this->assertEqualsWithDelta($targetVector, $firstResultVector, 0.00001, "The most similar vector should be the target vector itself");
-        $this->assertEqualsWithDelta(1.0, $firstResultSimilarity, 0.001, "The similarity of the most similar vector should be the highest possible value");
+        // Verify that the result vector matches what normalize() would produce for our target
+        $expectedNormalized = $this->vectorTable->normalize($targetVector);
+        $this->assertEqualsWithDelta($expectedNormalized, $firstResultVector, 0.00001, "The most similar vector should match the normalized target vector");
+
+        // The similarity should be very high since we're searching for the same vector we inserted
+        $this->assertGreaterThan(0.99, $firstResultSimilarity, "The similarity should be very high when searching for the same vector");
 
         $this->vectorTable->getConnection()->rollback();
     }

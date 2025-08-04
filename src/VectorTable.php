@@ -62,7 +62,6 @@ CREATE FUNCTION COSIM(v1 JSON, v2 JSON) RETURNS FLOAT DETERMINISTIC BEGIN DECLAR
         $vectorsQuery =
             "CREATE TABLE %s %s (
                 id INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
-                vector JSON,
                 normalized_vector JSON,
                 binary_code VARBINARY(%d),
                 created TIMESTAMP DEFAULT CURRENT_TIMESTAMP
@@ -186,8 +185,8 @@ CREATE FUNCTION COSIM(v1 JSON, v2 JSON) RETURNS FLOAT DETERMINISTIC BEGIN DECLAR
         $tableName = $this->getVectorTableName();
 
         $insertQuery = empty($id) ?
-            "INSERT INTO $tableName (vector, normalized_vector, binary_code) VALUES (?, ?, UNHEX(?))" :
-            "UPDATE $tableName SET vector = ?, normalized_vector = ?, binary_code = UNHEX(?) WHERE id = $id";
+            "INSERT INTO $tableName (normalized_vector, binary_code) VALUES (?, UNHEX(?))" :
+            "UPDATE $tableName SET normalized_vector = ?, binary_code = UNHEX(?) WHERE id = $id";
 
         $statement = $this->mysqli->prepare($insertQuery);
         if(!$statement) {
@@ -196,10 +195,9 @@ CREATE FUNCTION COSIM(v1 JSON, v2 JSON) RETURNS FLOAT DETERMINISTIC BEGIN DECLAR
             throw $e;
         }
 
-        $vector = json_encode($vector);
         $normalizedVector = json_encode($normalizedVector);
 
-        $statement->bind_param('sss', $vector, $normalizedVector, $binaryCode);
+        $statement->bind_param('ss', $normalizedVector, $binaryCode);
 
         $success = $statement->execute();
         if(!$success) {
@@ -221,7 +219,7 @@ CREATE FUNCTION COSIM(v1 JSON, v2 JSON) RETURNS FLOAT DETERMINISTIC BEGIN DECLAR
     public function batchInsert(array $vectorArray): array {
         $tableName = $this->getVectorTableName();
 
-        $statement = $this->getConnection()->prepare("INSERT INTO $tableName (vector, normalized_vector, binary_code) VALUES (?, ?, UNHEX(?))");
+        $statement = $this->getConnection()->prepare("INSERT INTO $tableName (normalized_vector, binary_code) VALUES (?, UNHEX(?))");
         if(!$statement) {
             throw new \Exception("Prepare failed: " . $this->getConnection()->error);
         }
@@ -232,10 +230,9 @@ CREATE FUNCTION COSIM(v1 JSON, v2 JSON) RETURNS FLOAT DETERMINISTIC BEGIN DECLAR
             foreach ($vectorArray as $vector) {
                 $normalizedVector = $this->normalize($vector);
                 $binaryCode = $this->vectorToHex($normalizedVector);
-                $vectorJson = json_encode($vector);
                 $normalizedVectorJson = json_encode($normalizedVector);
 
-                $statement->bind_param('sss', $vectorJson, $normalizedVectorJson, $binaryCode);
+                $statement->bind_param('ss', $normalizedVectorJson, $binaryCode);
 
                 if (!$statement->execute()) {
                     throw new \Exception("Execute failed: " . $statement->error);
@@ -265,7 +262,7 @@ CREATE FUNCTION COSIM(v1 JSON, v2 JSON) RETURNS FLOAT DETERMINISTIC BEGIN DECLAR
         $tableName = $this->getVectorTableName();
 
         $placeholders = implode(', ', array_fill(0, count($ids), '?'));
-        $statement = $this->mysqli->prepare("SELECT id, vector, normalized_vector, binary_code FROM $tableName WHERE id IN ($placeholders)");
+        $statement = $this->mysqli->prepare("SELECT id, normalized_vector, binary_code FROM $tableName WHERE id IN ($placeholders)");
         $types = str_repeat('i', count($ids));
 
         $refs = [];
@@ -275,13 +272,12 @@ CREATE FUNCTION COSIM(v1 JSON, v2 JSON) RETURNS FLOAT DETERMINISTIC BEGIN DECLAR
 
         call_user_func_array([$statement, 'bind_param'], array_merge([$types], $refs));
         $statement->execute();
-        $statement->bind_result($vectorId, $vector, $normalizedVector, $binaryCode);
+        $statement->bind_result($vectorId, $normalizedVector, $binaryCode);
 
         $result = [];
         while ($statement->fetch()) {
             $result[] = [
                 'id' => $vectorId,
-                'vector' => json_decode($vector, true),
                 'normalized_vector' => json_decode($normalizedVector, true),
                 'binary_code' => $binaryCode
             ];
@@ -295,7 +291,7 @@ CREATE FUNCTION COSIM(v1 JSON, v2 JSON) RETURNS FLOAT DETERMINISTIC BEGIN DECLAR
     public function selectAll(): array {
         $tableName = $this->getVectorTableName();
 
-        $statement = $this->mysqli->prepare("SELECT id, vector, normalized_vector, binary_code FROM $tableName");
+        $statement = $this->mysqli->prepare("SELECT id, normalized_vector, binary_code FROM $tableName");
 
         if (!$statement) {
             $e = new \Exception($this->mysqli->error);
@@ -304,13 +300,12 @@ CREATE FUNCTION COSIM(v1 JSON, v2 JSON) RETURNS FLOAT DETERMINISTIC BEGIN DECLAR
         }
 
         $statement->execute();
-        $statement->bind_result($vectorId, $vector, $normalizedVector, $binaryCode);
+        $statement->bind_result($vectorId, $normalizedVector, $binaryCode);
 
         $result = [];
         while ($statement->fetch()) {
             $result[] = [
                 'id' => $vectorId,
-                'vector' => json_decode($vector, true),
                 'normalized_vector' => json_decode($normalizedVector, true),
                 'binary_code' => $binaryCode
             ];
@@ -407,7 +402,7 @@ CREATE FUNCTION COSIM(v1 JSON, v2 JSON) RETURNS FLOAT DETERMINISTIC BEGIN DECLAR
         // Rerank candidates using cosine similarity
         $placeholders = implode(',', array_fill(0, count($candidates), '?'));
         $sql = "
-        SELECT id, vector, normalized_vector, COSIM(normalized_vector, ?) AS similarity
+        SELECT id, normalized_vector, COSIM(normalized_vector, ?) AS similarity
         FROM %s
         WHERE id IN ($placeholders)
         ORDER BY similarity DESC
@@ -427,13 +422,12 @@ CREATE FUNCTION COSIM(v1 JSON, v2 JSON) RETURNS FLOAT DETERMINISTIC BEGIN DECLAR
 
         $statement->execute();
 
-        $statement->bind_result($id, $v, $nv, $sim);
+        $statement->bind_result($id, $nv, $sim);
 
         $results = [];
         while ($statement->fetch()) {
             $results[] = [
                 'id' => $id,
-                'vector' => json_decode($v, true),
                 'normalized_vector' => json_decode($nv, true),
                 'similarity' => $sim
             ];
@@ -453,7 +447,7 @@ CREATE FUNCTION COSIM(v1 JSON, v2 JSON) RETURNS FLOAT DETERMINISTIC BEGIN DECLAR
      * @param array $vector Input vector to normalize
      * @return array Normalized vector with magnitude ≈ 1.0
      */
-    private function normalize(array $vector): array
+    public function normalize(array $vector): array
     {
         // Calculate magnitude
         $magnitude = $this->getMagnitude($vector);
