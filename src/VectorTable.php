@@ -446,12 +446,15 @@ CREATE FUNCTION COSIM(v1 JSON, v2 JSON) RETURNS FLOAT DETERMINISTIC BEGIN DECLAR
      * For zero vectors, uses epsilon to avoid division by zero.
      *
      * @param array $vector Input vector to normalize
-     * @param float $epsilon Small value to use for zero vectors (default: 1e-12)
      * @return array Normalized vector with magnitude ≈ 1.0
      */
-    private function normalize(array $vector, float $epsilon = 1e-12): array
+    private function normalize(array $vector): array
     {
+        // Calculate magnitude
         $magnitude = $this->getMagnitude($vector);
+
+        // Small value to use for zero vectors (default: 1e-12)
+        $epsilon = floatval(1e-12);
 
         // Handle zero and near-zero vectors with epsilon to avoid division by very small numbers
         if (abs($magnitude) < $epsilon) {
