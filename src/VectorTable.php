@@ -113,7 +113,7 @@ CREATE FUNCTION COSIM(v1 JSON, v2 JSON) RETURNS FLOAT DETERMINISTIC BEGIN DECLAR
         $res = $this->mysqli->query(self::SQL_COSIM_FUNCTION);
 
         if(!$res) {
-            $e = new \Exception($this->mysqli->error);
+            $e = new \Exception("Failed to create COSIM function: " . $this->mysqli->error);
             $this->mysqli->rollback();
             throw $e;
         }
