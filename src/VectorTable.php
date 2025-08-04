@@ -51,6 +51,11 @@ CREATE FUNCTION COSIM(v1 JSON, v2 JSON) RETURNS FLOAT DETERMINISTIC BEGIN DECLAR
         return sprintf('%s_vectors', $this->name);
     }
 
+    public function getDimension(): int
+    {
+        return $this->dimension;
+    }
+
     protected function getCreateStatements(bool $ifNotExists = true): array {
         $binaryCodeLengthInBytes = ceil($this->dimension / 8);
 
