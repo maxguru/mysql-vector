@@ -239,10 +239,10 @@ class VectorTable
      *
      * @param array $v1 The first vector
      * @param array $v2 The second vector
-     * @return float The cosine similarity between the two vectors [-1, 1]
+     * @return float|null The cosine similarity between the two vectors [-1, 1], or null for invalid inputs
      * @throws \Exception
      */
-    public function cosim(array $v1, array $v2): float
+    public function cosim(array $v1, array $v2): ?float
     {
         $statement = $this->mysqli->prepare("SELECT MV_DOT_PRODUCT(?, ?)");
 
