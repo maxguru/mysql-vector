@@ -3,7 +3,6 @@
 namespace MHz\MysqlVector\Tests;
 
 use MHz\MysqlVector\VectorTable;
-use PHPUnit\Framework\TestCase;
 
 /**
  * SearchEffectivenessTest - Semantic search quality validation for MySQL Vector library
@@ -84,10 +83,9 @@ use PHPUnit\Framework\TestCase;
  *
  */
 
-class SearchEffectivenessTest extends TestCase
+class SearchEffectivenessTest extends BaseVectorTest
 {
     // Configuration
-    private VectorTable $vectorTable;
     private int $vectorDimension = 3072;
 
     // Test data storage
@@ -97,14 +95,7 @@ class SearchEffectivenessTest extends TestCase
 
     protected function setUp(): void
     {
-        $mysqli = new \mysqli('db', 'db', 'db', 'db', 3306);
-        if ($mysqli->connect_error) {
-            throw new \Exception("Database connection failed: " . $mysqli->connect_error);
-        }
-
-        // Initialize VectorTable with vector dimensions
-        $this->vectorTable = new VectorTable($mysqli, 'search_effectiveness_test', $this->vectorDimension);
-        $this->vectorTable->initialize();
+        parent::setUp();
 
         echo "\n=== MySQL Vector Library - Search Effectiveness Test ===\n";
         echo "Vector dimensions: {$this->vectorDimension}\n";
@@ -236,22 +227,15 @@ class SearchEffectivenessTest extends TestCase
     /**
      * Clean up after each test
      */
-    protected function tearDown(): void
-    {
-        if (isset($this->vectorTable)) {
-            // Clean up database tables and connection
-            $this->vectorTable->getConnection()->query("DROP TABLE IF EXISTS " . $this->vectorTable->getVectorTableName());
-            $this->vectorTable->getConnection()->query("DROP FUNCTION IF EXISTS MV_DOT_PRODUCT");
-            $this->vectorTable->getConnection()->close();
-        }
-    }
+
 
     /**
      * Load test vectors into the database for search effectiveness testing
      *
+     * @param VectorTable $vectorTable The VectorTable instance to use
      * @param string $usage The test usage type to filter vectors by (e.g., 'semantic_similarity', 'edge_cases')
      */
-    private function setupVectorData(string $usage): void
+    private function setupVectorData(VectorTable $vectorTable, string $usage): void
     {
         // Get test entries based on usage type
         $testEntries = $this->getVectorsByUsage($usage);
@@ -262,22 +246,22 @@ class SearchEffectivenessTest extends TestCase
         echo "Loading " . count($testEntries) . " vectors for '$usage' testing...\n";
         echo "Storing vectors in database...\n";
 
-        $this->vectorTable->getConnection()->begin_transaction();
+        $vectorTable->getConnection()->begin_transaction();
 
         try {
             foreach ($testEntries as $index => $entry) {
-                $vectorId = $this->vectorTable->upsert($entry['vector']);
+                $vectorId = $vectorTable->upsert($entry['vector']);
 
                 // Store simple mapping: database table ID → test data index
                 $this->vectorTableId2testDataIndex[$vectorId] = $index;
             }
 
-            $this->vectorTable->getConnection()->commit();
+            $vectorTable->getConnection()->commit();
             echo "Successfully stored " . count($testEntries) . " vectors.\n";
             echo "✓ Test data loaded: " . count($testEntries) . " vectors stored\n\n";
 
         } catch (\Exception $e) {
-            $this->vectorTable->getConnection()->rollback();
+            $vectorTable->getConnection()->rollback();
             $this->vectorTableId2testDataIndex = [];
             throw new \Exception("Failed to store vectors: " . $e->getMessage());
         }
@@ -285,15 +269,17 @@ class SearchEffectivenessTest extends TestCase
 
     /**
      * Clean up vectors from database after testing
+     *
+     * @param VectorTable $vectorTable The VectorTable instance to clean up
      */
-    private function cleanupVectorData(): void
+    private function cleanupVectorData(VectorTable $vectorTable): void
     {
         // Reset tracking array
         $this->vectorTableId2testDataIndex = [];
 
         // Clear all vectors from the test table
-        $tableName = $this->vectorTable->getVectorTableName();
-        $result = $this->vectorTable->getConnection()->query("DELETE FROM `$tableName`");
+        $tableName = $vectorTable->getVectorTableName();
+        $result = $vectorTable->getConnection()->query("DELETE FROM `$tableName`");
 
         if (!$result) {
             echo "! Warning: Failed to clean up test data\n\n";
@@ -303,8 +289,6 @@ class SearchEffectivenessTest extends TestCase
         echo "✓ Test data cleaned up\n\n";
     }
 
-
-
     /**
      * Test: Semantic similarity search effectiveness
      * Tests the library's ability to find semantically similar content
@@ -313,8 +297,11 @@ class SearchEffectivenessTest extends TestCase
     {
         echo "=== Semantic Similarity Search Test ===\n";
 
+        // Create VectorTable for this test
+        $vectorTable = $this->makeTable('semantic_similarity_test', $this->vectorDimension);
+
         // Setup test data for semantic similarity testing
-        $this->setupVectorData('semantic_similarity');
+        $this->setupVectorData($vectorTable, 'semantic_similarity');
 
         // Get semantic test queries from structured data
         $semanticTestCases = [];
@@ -352,7 +339,7 @@ class SearchEffectivenessTest extends TestCase
 
             // Search for similar vectors
             $startTime = microtime(true);
-            $results = $this->vectorTable->search($queryVector, 10);
+            $results = $vectorTable->search($queryVector, 10);
             $searchTime = microtime(true) - $startTime;
 
             echo "  Search completed in " . number_format($searchTime * 1000, 2) . "ms\n";
@@ -401,7 +388,7 @@ class SearchEffectivenessTest extends TestCase
         echo "✓ Semantic similarity search test completed\n\n";
 
         // Clean up test data
-        $this->cleanupVectorData();
+        $this->cleanupVectorData($vectorTable);
     }
 
     /**
@@ -412,8 +399,11 @@ class SearchEffectivenessTest extends TestCase
     {
         echo "=== Edge Case Testing ===\n";
 
+        // Create VectorTable for this test
+        $vectorTable = $this->makeTable('edge_cases_test', $this->vectorDimension);
+
         // Setup test data for edge case testing (stores entries with 'edge_cases' usage)
-        $this->setupVectorData('edge_cases');
+        $this->setupVectorData($vectorTable, 'edge_cases');
 
         // Build edge case test queries using entries with 'edge_cases_queries' usage
         // These entries are NOT stored in the database, avoiding exact matches
@@ -514,7 +504,7 @@ class SearchEffectivenessTest extends TestCase
             echo "Test: {$testCase['test_type']} - '{$testCase['query']}'\n";
 
             $queryVector = $testCase['entry']['vector'];
-            $results = $this->vectorTable->search($queryVector, 5);
+            $results = $vectorTable->search($queryVector, 5);
 
             // Assert that search returns results
             $this->assertNotEmpty($results, "Search should return results for edge case: '{$testCase['query']}'");
@@ -550,6 +540,6 @@ class SearchEffectivenessTest extends TestCase
         echo "✓ Edge case tests completed\n\n";
 
         // Clean up test data
-        $this->cleanupVectorData();
+        $this->cleanupVectorData($vectorTable);
     }
 }

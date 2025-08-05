@@ -2,32 +2,10 @@
 
 namespace MHz\MysqlVector\Tests;
 
-use MHz\MysqlVector\VectorTable;
-use PHPUnit\Framework\TestCase;
-
-class VectorTableTest extends TestCase
+class VectorTableTest extends BaseVectorTest
 {
-    private $vectorTable;
     private $dimension = 384;
     private $testVectorAmount = 100;
-
-    protected function setUp(): void
-    {
-        VectorTableTest::tearDownAfterClass();
-
-        $mysqli = new \mysqli('db', 'db', 'db', 'db', 3306);
-
-        // Check connection
-        if ($mysqli->connect_error) {
-            die("Connection failed: " . $mysqli->connect_error);
-        }
-
-        // Setup VectorTable for testing
-        $this->vectorTable = new VectorTable($mysqli, 'test_table', $this->dimension);
-
-        // Create required tables for testing
-        $this->vectorTable->initialize();
-    }
 
     private function getRandomVectors($count, $dimension) {
         $vecs = [];
@@ -41,12 +19,14 @@ class VectorTableTest extends TestCase
 
     public function testGetVectorTableName()
     {
-        $tableName = $this->vectorTable->getVectorTableName();
-        $this->assertEquals('test_table_vectors', $tableName);
+        $vectorTable = $this->makeTable('vector_table_test', 384);
+        $tableName = $vectorTable->getVectorTableName();
+        $this->assertTrue(strpos($tableName, 'vector_table_test') !== false);
     }
 
     public function testUpsertSingle() {
-        $this->vectorTable->getConnection()->begin_transaction();
+        $vectorTable = $this->makeTable('upsert_single_test', $this->dimension);
+        $vectorTable->getConnection()->begin_transaction();
 
         $vecs = $this->getRandomVectors(1, $this->dimension);
 
@@ -55,17 +35,18 @@ class VectorTableTest extends TestCase
         echo "Inserting 1 vector...\n";
         $time = microtime(true);
         foreach ($vecs as $vec) {
-            $ids[] = $this->vectorTable->upsert($vec);
+            $ids[] = $vectorTable->upsert($vec);
         }
         $time = microtime(true) - $time;
         echo "Elapsed time: " . sprintf("%.2f", $time) . " seconds\n";
 
-        $this->assertEquals(count($vecs), $this->vectorTable->count());
-        $this->vectorTable->getConnection()->rollback();
+        $this->assertEquals(count($vecs), $vectorTable->count());
+        $vectorTable->getConnection()->rollback();
     }
 
     public function testUpsert() {
-        $this->vectorTable->getConnection()->begin_transaction();
+        $vectorTable = $this->makeTable('upsert_test', $this->dimension);
+        $vectorTable->getConnection()->begin_transaction();
 
         $lastId = 0;
         $vecArray = [];
@@ -73,89 +54,93 @@ class VectorTableTest extends TestCase
         $time = microtime(true);
         for($i = 0; $i < $this->testVectorAmount; $i++) {
             $vec = $this->getRandomVectors(1, $this->dimension)[0];
-            $lastId = $this->vectorTable->upsert($vec);
+            $lastId = $vectorTable->upsert($vec);
             $vecArray[] = $vec;
         }
 
         $time = microtime(true) - $time;
         echo "Elapsed time: " . sprintf("%.2f", $time) . " seconds\n";
 
-        $this->assertEquals($this->testVectorAmount, count($this->vectorTable->selectAll()));
+        $this->assertEquals($this->testVectorAmount, count($vectorTable->selectAll()));
 
         echo "Inserting another $this->testVectorAmount vectors in a batch...\n";
         $time = microtime(true);
-        $this->vectorTable->batchInsert($vecArray);
+        $vectorTable->batchInsert($vecArray);
 
         $time = microtime(true) - $time;
         echo "Elapsed time: " . sprintf("%.2f", $time) . " seconds\n";
 
-        $this->assertEquals($this->testVectorAmount * 2, $this->vectorTable->count());
+        $this->assertEquals($this->testVectorAmount * 2, $vectorTable->count());
 
         $id = $lastId;
         $newVec = $this->getRandomVectors(1, $this->dimension)[0];
-        $this->vectorTable->upsert($newVec, $id);
-        $r = $this->vectorTable->select([$id]);
+        $vectorTable->upsert($newVec, $id);
+        $r = $vectorTable->select([$id]);
         $this->assertCount(1, $r);
         // Verify that the stored vector matches what the normalize() method would produce
-        $expectedNormalized = $this->vectorTable->normalize($newVec);
+        $expectedNormalized = $vectorTable->normalize($newVec);
         $actualStored = $r[0]['normalized_vector'];
         $this->assertEqualsWithDelta($expectedNormalized, $actualStored, 0.00001, "Stored vector should match the result of normalize() method");
 
-        $this->vectorTable->getConnection()->rollback();
+        $vectorTable->getConnection()->rollback();
     }
 
     public function testCosim() {
-        $this->vectorTable->getConnection()->begin_transaction();
+        $vectorTable = $this->makeTable('cosim_test', $this->dimension);
+        $vectorTable->getConnection()->begin_transaction();
 
         $vecs = $this->getRandomVectors(2, $this->dimension);
 
         // Calculate expected cosine similarity manually
         // Since cosim() normalizes inputs, we need to normalize our test vectors too
-        $norm1 = $this->vectorTable->normalize($vecs[0]);
-        $norm2 = $this->vectorTable->normalize($vecs[1]);
+        $norm1 = $vectorTable->normalize($vecs[0]);
+        $norm2 = $vectorTable->normalize($vecs[1]);
 
         $dotProduct = 0;
         for ($i = 0; $i < count($norm1); $i++) {
             $dotProduct += $norm1[$i] * $norm2[$i];
         }
 
-        $this->assertEqualsWithDelta($dotProduct, $this->vectorTable->cosim($vecs[0], $vecs[1]), 0.0001);
+        $this->assertEqualsWithDelta($dotProduct, $vectorTable->cosim($vecs[0], $vecs[1]), 0.0001);
     }
 
     public function testSelectAll() {
-        $this->vectorTable->getConnection()->begin_transaction();
+        $vectorTable = $this->makeTable('select_all_test', $this->dimension);
+        $vectorTable->getConnection()->begin_transaction();
 
         $vecs = $this->getRandomVectors(10, $this->dimension);
         foreach ($vecs as $vec) {
-            $this->vectorTable->upsert($vec);
+            $vectorTable->upsert($vec);
         }
 
-        $results = $this->vectorTable->selectAll();
+        $results = $vectorTable->selectAll();
         $this->assertSameSize($vecs, $results);
 
         $i = 0;
         foreach ($results as $result) {
             // Verify that each stored vector matches what the normalize() method would produce
-            $expectedNormalized = $this->vectorTable->normalize($vecs[$i]);
+            $expectedNormalized = $vectorTable->normalize($vecs[$i]);
             $actualStored = $result['normalized_vector'];
             $this->assertEqualsWithDelta($expectedNormalized, $actualStored, 0.00001, "Each stored vector should match the result of normalize() method");
             $i++;
         }
 
-        $this->vectorTable->getConnection()->rollback();
+        $vectorTable->getConnection()->rollback();
     }
 
     public function testVectorToHex() {
-        $hex = $this->vectorTable->vectorToHex([0.5, 0.5, 0, 0, 0, 0.5]);
+        $vectorTable = $this->makeTable('vector_to_hex_test', $this->dimension);
+
+        $hex = $vectorTable->vectorToHex([0.5, 0.5, 0, 0, 0, 0.5]);
         $this->assertEqualsIgnoringCase('23', $hex);
 
-        $hex = $this->vectorTable->vectorToHex([0.5, 0.5, 0.5, 0.5, 0,0,0,0,0,0,0,0,0,0,0,0]);
+        $hex = $vectorTable->vectorToHex([0.5, 0.5, 0.5, 0.5, 0,0,0,0,0,0,0,0,0,0,0,0]);
         $this->assertEqualsIgnoringCase('0f00', $hex);
 
-        $hex = $this->vectorTable->vectorToHex([0.5, 0.5, 0.5, 0.5, 0,0,0,0,0,0,0,0,0,0,0,1]);
+        $hex = $vectorTable->vectorToHex([0.5, 0.5, 0.5, 0.5, 0,0,0,0,0,0,0,0,0,0,0,1]);
         $this->assertEqualsIgnoringCase('0f80', $hex);
 
-        $hex = $this->vectorTable->vectorToHex([0.5, 0.5, 0.5, 0.5, 1,0,0,0,0,0,0,0,0,0,0,1]);
+        $hex = $vectorTable->vectorToHex([0.5, 0.5, 0.5, 0.5, 1,0,0,0,0,0,0,0,0,0,0,1]);
         $this->assertEqualsIgnoringCase('1f80', $hex);
     }
 
@@ -178,41 +163,43 @@ class VectorTableTest extends TestCase
      * This test would FAIL with the old implementation and PASS with the new one.
      */
     public function testQuantizationBugFix() {
+        $vectorTable = $this->makeTable('quantization_test', $this->dimension);
+
         // Test case 1: Simple 8-bit vector
         // Binary: 10101001 -> Little-endian: bit 0=1, bit 2=1, bit 4=1, bit 7=1
         // Expected: 0x95 (149 decimal)
         $vector1 = [1, -1, 1, 0, 1, -1, 0, 1];
-        $hex1 = $this->vectorTable->vectorToHex($vector1);
+        $hex1 = $vectorTable->vectorToHex($vector1);
         $this->assertEquals('95', $hex1, 'Simple 8-bit vector should produce correct little-endian result');
 
         // Test case 2: All zeros
         $vector2 = [0, 0, 0, 0, 0, 0, 0, 0];
-        $hex2 = $this->vectorTable->vectorToHex($vector2);
+        $hex2 = $vectorTable->vectorToHex($vector2);
         $this->assertEquals('00', $hex2, 'All zeros should produce 00');
 
         // Test case 3: All ones
         $vector3 = [1, 1, 1, 1, 1, 1, 1, 1];
-        $hex3 = $this->vectorTable->vectorToHex($vector3);
+        $hex3 = $vectorTable->vectorToHex($vector3);
         $this->assertEquals('ff', $hex3, 'All ones should produce ff');
 
         // Test case 4: Partial byte (4 bits)
         // Binary: 1101 -> Little-endian: bit 0=1, bit 1=1, bit 3=1
         // Expected: 0x0b (11 decimal: 1+2+8)
         $vector4 = [1, 1, 0, 1];
-        $hex4 = $this->vectorTable->vectorToHex($vector4);
+        $hex4 = $vectorTable->vectorToHex($vector4);
         $this->assertEquals('0b', $hex4, 'Partial byte should be handled correctly');
 
         // Test case 5: Cross byte boundary (9 bits)
         // First byte: bit 0=1 -> 0x01
         // Second byte: bit 0=1 -> 0x01
         $vector5 = [1, 0, 0, 0, 0, 0, 0, 0, 1];
-        $hex5 = $this->vectorTable->vectorToHex($vector5);
+        $hex5 = $vectorTable->vectorToHex($vector5);
         $this->assertEquals('0101', $hex5, 'Cross byte boundary should work correctly');
 
         // Test case 6: Verify consistency (same input should always produce same output)
         $vector6 = [1, -1, 1, 0, 1, -1, 0, 1];
-        $hex6a = $this->vectorTable->vectorToHex($vector6);
-        $hex6b = $this->vectorTable->vectorToHex($vector6);
+        $hex6a = $vectorTable->vectorToHex($vector6);
+        $hex6b = $vectorTable->vectorToHex($vector6);
         $this->assertEquals($hex6a, $hex6b, 'Results should be deterministic');
 
         // Test case 7: Large vector (typical embedding size)
@@ -220,7 +207,7 @@ class VectorTableTest extends TestCase
         $vector7[0] = 1;  // Set first bit
         $vector7[7] = 1;  // Set 8th bit (position 7)
         $vector7[383] = 1; // Set last bit
-        $hex7 = $this->vectorTable->vectorToHex($vector7);
+        $hex7 = $vectorTable->vectorToHex($vector7);
 
         // Should be 48 bytes (384 bits / 8)
         $this->assertEquals(96, strlen($hex7), 'Large vector should produce correct length hex string');
@@ -239,6 +226,8 @@ class VectorTableTest extends TestCase
      * This test shows the difference between old (buggy) and new (fixed) behavior
      */
     public function testQuantizationBugFixComparison() {
+        $vectorTable = $this->makeTable('quantization_comparison_test', $this->dimension);
+
         // This is what the OLD buggy implementation would have produced:
         // Vector [1, -1, 1, 0, 1, -1, 0, 1] -> binary string "10101001"
         // -> padded "10101001" -> split into ["1010", "1001"]
@@ -247,7 +236,7 @@ class VectorTableTest extends TestCase
 
         // The NEW fixed implementation produces:
         $vector = [1, -1, 1, 0, 1, -1, 0, 1];
-        $actualResult = $this->vectorTable->vectorToHex($vector);
+        $actualResult = $vectorTable->vectorToHex($vector);
 
         // With proper bit manipulation and little-endian ordering: 0x95
         $expectedFixed = '95';
@@ -271,24 +260,25 @@ class VectorTableTest extends TestCase
     }
 
     public function testSearch() {
+        $vectorTable = $this->makeTable('search_test', $this->dimension);
         $multiples = 1;
-        $this->vectorTable->getConnection()->begin_transaction();
+        $vectorTable->getConnection()->begin_transaction();
 
         // Insert $this->testVectorAmount random vectors
         for($i = 0; $i < $multiples; $i++) {
             $vecs = $this->getRandomVectors($this->testVectorAmount, $this->dimension);
-            $this->vectorTable->batchInsert($vecs);
+            $vectorTable->batchInsert($vecs);
         }
 
         // Let's insert a known vector
         $targetVector = array_fill(0, $this->dimension, 0.5);
-        $this->vectorTable->upsert($targetVector);
+        $vectorTable->upsert($targetVector);
 
         // Now, we search for this vector
         $searchAmount = $this->testVectorAmount * $multiples;
         echo "Searching for 1 vector among ($searchAmount) with binary quantization...\n";
         $time = microtime(true);
-        $results = $this->vectorTable->search($targetVector);
+        $results = $vectorTable->search($targetVector);
         $time = microtime(true) - $time;
         // print time in format 00:00:00.000
         echo sprintf("Search completed in %.2f seconds\n", $time);
@@ -298,51 +288,34 @@ class VectorTableTest extends TestCase
         $firstResultSimilarity = $results[0]['similarity'];
 
         // Verify that the result vector matches what normalize() would produce for our target
-        $expectedNormalized = $this->vectorTable->normalize($targetVector);
+        $expectedNormalized = $vectorTable->normalize($targetVector);
         $this->assertEqualsWithDelta($expectedNormalized, $firstResultVector, 0.00001, "The most similar vector should match the normalized target vector");
 
         // The similarity should be very high since we're searching for the same vector we inserted
         $this->assertGreaterThan(0.99, $firstResultSimilarity, "The similarity should be very high when searching for the same vector");
 
-        $this->vectorTable->getConnection()->rollback();
+        $vectorTable->getConnection()->rollback();
     }
 
     public function testDelete(): void {
-        $this->vectorTable->getConnection()->begin_transaction();
+        $vectorTable = $this->makeTable('delete_test', $this->dimension);
+        $vectorTable->getConnection()->begin_transaction();
 
         $ids = [];
         $vecs = $this->getRandomVectors(10, $this->dimension);
         foreach ($vecs as $vec) {
-            $ids[] = $this->vectorTable->upsert($vec);
+            $ids[] = $vectorTable->upsert($vec);
         }
 
-        $this->assertEquals(count($ids), $this->vectorTable->count());
+        $this->assertEquals(count($ids), $vectorTable->count());
 
         foreach ($ids as $id) {
-            $this->vectorTable->delete($id);
+            $vectorTable->delete($id);
         }
 
-        $this->assertEquals(0, $this->vectorTable->count());
+        $this->assertEquals(0, $vectorTable->count());
 
-        $this->vectorTable->getConnection()->rollback();
-    }
-
-    public static function tearDownAfterClass(): void
-    {
-        // Clean up the database and close connection
-        $mysqli = new \mysqli('db', 'db', 'db', 'db', 3306);
-        $vectorTable = new VectorTable($mysqli, 'test_table', 3);
-        $mysqli->query("DROP TABLE IF EXISTS " . $vectorTable->getVectorTableName());
-        $mysqli->query("DROP FUNCTION IF EXISTS MV_DOT_PRODUCT");
-        $mysqli->close();
-    }
-
-    protected function tearDown(): void
-    {
-        // Clean up the database and close connection
-        $this->vectorTable->getConnection()->query("DROP TABLE IF EXISTS " . $this->vectorTable->getVectorTableName());
-        $this->vectorTable->getConnection()->query("DROP FUNCTION IF EXISTS MV_DOT_PRODUCT");
-        $this->vectorTable->getConnection()->close();
+        $vectorTable->getConnection()->rollback();
     }
 
 }

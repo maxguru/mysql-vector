@@ -113,54 +113,142 @@ class VectorTable
     }
 
     /**
-     * Create the tables required for storing vectors
+     * Initialize only the tables for this VectorTable instance
      * @param bool $ifNotExists Whether to use IF NOT EXISTS in the CREATE TABLE statements
      * @return void
      * @throws \Exception If the tables could not be created
      */
-    public function initialize(bool $ifNotExists = true): void
+    public function initializeTables(bool $ifNotExists = true): void
     {
         $this->mysqli->begin_transaction();
-        foreach ($this->getCreateStatements($ifNotExists) as $statement) {
-            $success = $this->mysqli->query($statement);
-            if (!$success) {
-                $e = new \Exception($this->mysqli->error);
-                $this->mysqli->rollback();
-                throw $e;
+        try {
+            foreach ($this->getCreateStatements($ifNotExists) as $statement) {
+                $success = $this->mysqli->query($statement);
+                if (!$success) {
+                    throw new \Exception($this->mysqli->error);
+                }
             }
-        }
 
-        // Add MV_DOT_PRODUCT function
-        $this->mysqli->query("DROP FUNCTION IF EXISTS MV_DOT_PRODUCT");
-        $res = $this->mysqli->query(self::SQL_DOT_PRODUCT_FUNCTION);
+            // Drop the index if it exists and recreate with correct length
+            $tableName = $this->getVectorTableName();
+            $query = "
+            SELECT COUNT(1) index_exists
+            FROM information_schema.statistics
+            WHERE table_name=? AND index_name='idx_binary_code'
+            ";
+            $stmt = $this->mysqli->prepare($query);
+            $stmt->bind_param('s', $tableName);
+            $stmt->execute();
+            $result = $stmt->get_result();
+            $row = $result->fetch_assoc();
+            if ($row['index_exists'] > 0) {
+                $this->mysqli->query("DROP INDEX idx_binary_code ON " . $tableName);
+            }
+            $stmt->close();
 
-        if(!$res) {
-            $e = new \Exception("Failed to create MV_DOT_PRODUCT function: " . $this->mysqli->error);
+            $binaryCodeLengthInBytes = ceil($this->dimension / 8);
+            $this->mysqli->query("CREATE INDEX idx_binary_code ON " . $tableName . " (binary_code($binaryCodeLengthInBytes))");
+
+            $this->mysqli->commit();
+        } catch (\Exception $e) {
             $this->mysqli->rollback();
             throw $e;
         }
+    }
 
-        // Drop the index if it exists.
-        $tableName = $this->getVectorTableName();
-        $query = "
-        SELECT COUNT(1) index_exists
-        FROM information_schema.statistics
-        WHERE table_name=? AND index_name='idx_binary_code'
-        ";
-        $stmt = $this->mysqli->prepare($query);
-        $stmt->bind_param('s', $tableName);
-        $stmt->execute();
-        $result = $stmt->get_result();
-        $row = $result->fetch_assoc();
-        if ($row['index_exists'] > 0) {
-          $this->mysqli->query("DROP INDEX idx_binary_code ON " . $tableName);
+    /**
+     * Initialize global MySQL functions (should be called once per database)
+     * @param \mysqli $mysqli Database connection
+     * @return void
+     * @throws \Exception If the functions could not be created
+     */
+    public static function initializeFunctions(\mysqli $mysqli): void
+    {
+        $mysqli->begin_transaction();
+        try {
+            // Add MV_DOT_PRODUCT function
+            $mysqli->query("DROP FUNCTION IF EXISTS MV_DOT_PRODUCT");
+            $res = $mysqli->query(self::SQL_DOT_PRODUCT_FUNCTION);
+
+            if (!$res) {
+                throw new \Exception("Failed to create MV_DOT_PRODUCT function: " . $mysqli->error);
+            }
+
+            $mysqli->commit();
+        } catch (\Exception $e) {
+            $mysqli->rollback();
+            throw $e;
         }
-        $stmt->close();
+    }
 
-        $binaryCodeLengthInBytes = ceil($this->dimension / 8);
-        $this->mysqli->query("CREATE INDEX idx_binary_code ON " . $tableName . " (binary_code($binaryCodeLengthInBytes))");
+    /**
+     * Create the tables and functions required for storing vectors
+     * @param bool $ifNotExists Whether to use IF NOT EXISTS in the CREATE TABLE statements
+     * @return void
+     * @throws \Exception If the tables or functions could not be created
+     */
+    public function initialize(bool $ifNotExists = true): void
+    {
+        // Initialize functions first (global)
+        self::initializeFunctions($this->mysqli);
 
-        $this->mysqli->commit();
+        // Then initialize tables (instance-specific)
+        $this->initializeTables($ifNotExists);
+    }
+
+    /**
+     * Clean up tables for this VectorTable instance
+     * @return void
+     * @throws \Exception If cleanup fails
+     */
+    public function deinitializeTables(): void
+    {
+        $tableName = $this->getVectorTableName();
+
+        $this->mysqli->begin_transaction();
+        try {
+            // Drop the main vector table
+            $this->mysqli->query("DROP TABLE IF EXISTS " . $tableName);
+
+            $this->mysqli->commit();
+        } catch (\Exception $e) {
+            $this->mysqli->rollback();
+            throw $e;
+        }
+    }
+
+    /**
+     * Clean up global MySQL functions
+     * @param \mysqli $mysqli Database connection
+     * @return void
+     * @throws \Exception If cleanup fails
+     */
+    public static function deinitializeFunctions(\mysqli $mysqli): void
+    {
+        $mysqli->begin_transaction();
+        try {
+            // Drop global functions
+            $mysqli->query("DROP FUNCTION IF EXISTS MV_DOT_PRODUCT");
+
+            $mysqli->commit();
+        } catch (\Exception $e) {
+            $mysqli->rollback();
+            throw $e;
+        }
+    }
+
+    /**
+     * Complete cleanup of tables and functions
+     * @return void
+     * @throws \Exception If cleanup fails
+     */
+    public function deinitialize(): void
+    {
+        // Clean up tables first
+        $this->deinitializeTables();
+
+        // Then clean up functions (global)
+        self::deinitializeFunctions($this->mysqli);
     }
 
     /**
