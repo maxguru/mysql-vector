@@ -9,8 +9,27 @@ class VectorTable
     private string $engine;
     private \mysqli $mysqli;
 
-    const SQL_COSIM_FUNCTION = "
-CREATE FUNCTION COSIM(v1 JSON, v2 JSON) RETURNS FLOAT DETERMINISTIC BEGIN DECLARE sim FLOAT DEFAULT 0; DECLARE i INT DEFAULT 0; DECLARE len INT DEFAULT JSON_LENGTH(v1); IF JSON_LENGTH(v1) != JSON_LENGTH(v2) THEN RETURN NULL; END IF; WHILE i < len DO SET sim = sim + (JSON_EXTRACT(v1, CONCAT('$[', i, ']')) * JSON_EXTRACT(v2, CONCAT('$[', i, ']'))); SET i = i + 1; END WHILE; RETURN sim; END";
+    const SQL_DOT_PRODUCT_FUNCTION = "
+        CREATE FUNCTION MV_DOT_PRODUCT(v1 JSON, v2 JSON)
+        RETURNS FLOAT
+        DETERMINISTIC
+        READS SQL DATA
+        BEGIN
+            DECLARE sim FLOAT DEFAULT 0;
+            DECLARE i INT DEFAULT 0;
+            DECLARE len INT DEFAULT JSON_LENGTH(v1);
+
+            IF JSON_LENGTH(v1) != JSON_LENGTH(v2) THEN
+                RETURN NULL;
+            END IF;
+
+            WHILE i < len DO
+                SET sim = sim + (JSON_EXTRACT(v1, CONCAT('$[', i, ']')) * JSON_EXTRACT(v2, CONCAT('$[', i, ']')));
+                SET i = i + 1;
+            END WHILE;
+
+            RETURN sim;
+        END";
 
     /**
      * Instantiate a new VectorTable object.
@@ -111,12 +130,12 @@ CREATE FUNCTION COSIM(v1 JSON, v2 JSON) RETURNS FLOAT DETERMINISTIC BEGIN DECLAR
             }
         }
 
-        // Add COSIM function
-        $this->mysqli->query("DROP FUNCTION IF EXISTS COSIM");
-        $res = $this->mysqli->query(self::SQL_COSIM_FUNCTION);
+        // Add MV_DOT_PRODUCT function
+        $this->mysqli->query("DROP FUNCTION IF EXISTS MV_DOT_PRODUCT");
+        $res = $this->mysqli->query(self::SQL_DOT_PRODUCT_FUNCTION);
 
         if(!$res) {
-            $e = new \Exception("Failed to create COSIM function: " . $this->mysqli->error);
+            $e = new \Exception("Failed to create MV_DOT_PRODUCT function: " . $this->mysqli->error);
             $this->mysqli->rollback();
             throw $e;
         }
@@ -145,24 +164,29 @@ CREATE FUNCTION COSIM(v1 JSON, v2 JSON) RETURNS FLOAT DETERMINISTIC BEGIN DECLAR
     }
 
     /**
-     * Compute the cosine similarity between two normalized vectors
+     * Compute the cosine similarity between two vectors
+     *
+     * This method normalizes both input vectors and then computes their dot product,
+     * which equals the cosine similarity for normalized vectors.
+     *
      * @param array $v1 The first vector
      * @param array $v2 The second vector
-     * @return float The cosine similarity between the two vectors [0, 1]
+     * @return float The cosine similarity between the two vectors [-1, 1]
      * @throws \Exception
      */
     public function cosim(array $v1, array $v2): float
     {
-        $statement = $this->mysqli->prepare("SELECT COSIM(?, ?)");
+        $statement = $this->mysqli->prepare("SELECT MV_DOT_PRODUCT(?, ?)");
 
         if(!$statement) {
-            throw new \Exception("Failed to prepare cosine similarity query: " . $this->mysqli->error);
+            throw new \Exception("Failed to prepare dot product query: " . $this->mysqli->error);
         }
 
-        $v1 = json_encode($v1);
-        $v2 = json_encode($v2);
+        // Normalize both vectors before computing dot product (which equals cosine similarity)
+        $normalizedV1 = json_encode($this->normalize($v1));
+        $normalizedV2 = json_encode($this->normalize($v2));
 
-        $statement->bind_param('ss', $v1, $v2);
+        $statement->bind_param('ss', $normalizedV1, $normalizedV2);
         $statement->execute();
         $statement->bind_result($similarity);
         $statement->fetch();
@@ -397,10 +421,10 @@ CREATE FUNCTION COSIM(v1 JSON, v2 JSON) RETURNS FLOAT DETERMINISTIC BEGIN DECLAR
             return [];
         }
 
-        // Rerank candidates using cosine similarity
+        // Rerank candidates using cosine similarity (dot product of normalized vectors)
         $placeholders = implode(',', array_fill(0, count($candidates), '?'));
         $sql = "
-        SELECT id, normalized_vector, COSIM(normalized_vector, ?) AS similarity
+        SELECT id, normalized_vector, MV_DOT_PRODUCT(normalized_vector, ?) AS similarity
         FROM %s
         WHERE id IN ($placeholders)
         ORDER BY similarity DESC
@@ -410,7 +434,7 @@ CREATE FUNCTION COSIM(v1 JSON, v2 JSON) RETURNS FLOAT DETERMINISTIC BEGIN DECLAR
         $statement = $this->mysqli->prepare($sql);
 
         if(!$statement) {
-            throw new \Exception("Failed to prepare cosine similarity query: " . $this->mysqli->error);
+            throw new \Exception("Failed to prepare dot product query: " . $this->mysqli->error);
         }
 
         $normalizedVector = json_encode($normalizedVector);

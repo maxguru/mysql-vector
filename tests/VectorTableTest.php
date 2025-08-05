@@ -108,9 +108,15 @@ class VectorTableTest extends TestCase
         $this->vectorTable->getConnection()->begin_transaction();
 
         $vecs = $this->getRandomVectors(2, $this->dimension);
+
+        // Calculate expected cosine similarity manually
+        // Since cosim() normalizes inputs, we need to normalize our test vectors too
+        $norm1 = $this->vectorTable->normalize($vecs[0]);
+        $norm2 = $this->vectorTable->normalize($vecs[1]);
+
         $dotProduct = 0;
-        for ($i = 0; $i < count($vecs[0]); $i++) {
-            $dotProduct += $vecs[0][$i] * $vecs[1][$i];
+        for ($i = 0; $i < count($norm1); $i++) {
+            $dotProduct += $norm1[$i] * $norm2[$i];
         }
 
         $this->assertEqualsWithDelta($dotProduct, $this->vectorTable->cosim($vecs[0], $vecs[1]), 0.0001);
@@ -327,7 +333,7 @@ class VectorTableTest extends TestCase
         $mysqli = new \mysqli('db', 'db', 'db', 'db', 3306);
         $vectorTable = new VectorTable($mysqli, 'test_table', 3);
         $mysqli->query("DROP TABLE IF EXISTS " . $vectorTable->getVectorTableName());
-        $mysqli->query("DROP FUNCTION IF EXISTS COSIM");
+        $mysqli->query("DROP FUNCTION IF EXISTS MV_DOT_PRODUCT");
         $mysqli->close();
     }
 
@@ -335,7 +341,7 @@ class VectorTableTest extends TestCase
     {
         // Clean up the database and close connection
         $this->vectorTable->getConnection()->query("DROP TABLE IF EXISTS " . $this->vectorTable->getVectorTableName());
-        $this->vectorTable->getConnection()->query("DROP FUNCTION IF EXISTS COSIM");
+        $this->vectorTable->getConnection()->query("DROP FUNCTION IF EXISTS MV_DOT_PRODUCT");
         $this->vectorTable->getConnection()->close();
     }
 

@@ -70,8 +70,8 @@ class CosineAccuracyValidationTest extends TestCase
         // Initialize VectorTable with default dimension (will be adjusted per test)
         $this->vectorTable = new VectorTable($mysqli, 'cosine_accuracy_test', 384);
 
-        // Clean up any existing COSIM function first
-        $mysqli->query("DROP FUNCTION IF EXISTS COSIM");
+        // Clean up any existing functions first
+        $mysqli->query("DROP FUNCTION IF EXISTS MV_DOT_PRODUCT");
 
         $this->vectorTable->initialize();
 
@@ -409,7 +409,7 @@ class CosineAccuracyValidationTest extends TestCase
         $vector4d = [1.0, 2.0, 3.0, 4.0];
 
         $result = $this->vectorTable->cosim($vector3d, $vector4d);
-        // MySQL COSIM function should return NULL for mismatched dimensions
+        // MySQL MV_DOT_PRODUCT function should return NULL for mismatched dimensions
         if ($result === null) {
             echo "  ✓ Mismatched dimensions handled correctly (returned NULL)\n";
         } else {

@@ -241,7 +241,7 @@ class SearchEffectivenessTest extends TestCase
         if (isset($this->vectorTable)) {
             // Clean up database tables and connection
             $this->vectorTable->getConnection()->query("DROP TABLE IF EXISTS " . $this->vectorTable->getVectorTableName());
-            $this->vectorTable->getConnection()->query("DROP FUNCTION IF EXISTS COSIM");
+            $this->vectorTable->getConnection()->query("DROP FUNCTION IF EXISTS MV_DOT_PRODUCT");
             $this->vectorTable->getConnection()->close();
         }
     }

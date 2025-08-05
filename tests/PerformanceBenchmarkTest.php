@@ -113,7 +113,7 @@ class PerformanceBenchmarkTest extends TestCase
         $mysqli = new \mysqli('db', 'db', 'db', 'db', 3306);
         $vectorTable = new VectorTable($mysqli, 'test_table', 3);
         $mysqli->query("DROP TABLE IF EXISTS " . $vectorTable->getVectorTableName());
-        $mysqli->query("DROP FUNCTION IF EXISTS COSIM");
+        $mysqli->query("DROP FUNCTION IF EXISTS MV_DOT_PRODUCT");
         $mysqli->close();
     }
 
@@ -121,7 +121,7 @@ class PerformanceBenchmarkTest extends TestCase
     {
         // Clean up the database and close connection
         $this->vectorTable->getConnection()->query("DROP TABLE IF EXISTS " . $this->vectorTable->getVectorTableName());
-        $this->vectorTable->getConnection()->query("DROP FUNCTION IF EXISTS COSIM");
+        $this->vectorTable->getConnection()->query("DROP FUNCTION IF EXISTS MV_DOT_PRODUCT");
         $this->vectorTable->getConnection()->close();
     }
 }
