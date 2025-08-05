@@ -19,7 +19,7 @@ class VectorTableTest extends BaseVectorTest
 
     public function testGetVectorTableName()
     {
-        $vectorTable = $this->makeTable('vector_table_test', 384);
+        $vectorTable = $this->makeTable('vector_table_test', $this->dimension);
         $tableName = $vectorTable->getVectorTableName();
         $this->assertTrue(strpos($tableName, 'vector_table_test') !== false);
     }
