@@ -1,11 +1,17 @@
 # A Library for MySQL Vector Operations
 
 ## Overview
-The `VectorTable` class is a PHP implementation designed to facilitate the storage, retrieval, and comparison of high-dimensional vectors in a MySQL database. This class utilizes MySQL JSON data types and a custom cosine similarity function (`COSIM`) to perform vector comparisons efficiently.
+The `VectorTable` class is a PHP implementation designed to facilitate the storage and search of high-dimensional vectors in a MySQL database. This class stores normalized and quantized vectors in JSON and binary formats and uses a custom MySQL function for cosine similarity calculations.
+
+### Computational Efficiency
+The library stores only **normalized vectors** in the database, which provides computational efficiency, eliminating normalization overhead (cosine similarity is simply a dot product of normalized vectors).
 
 ### Search Performance
-Vectors are binary quantized upon insertion into the database to optimize search speed and reranked to improve accuracy.
-However, this library is only suitable for small datasets (less than 1,000,000 vectors). For large datasets, it is recommended that you use a dedicated vector database such as [Qdrant](https://qdrant.tech/).
+Vectors are binary quantized upon insertion into the database to optimize search speed and reranked to improve accuracy using a two-stage algorithm:
+1. **Stage 1**: Fast filtering using Hamming distance on binary quantized codes
+2. **Stage 2**: Precise re-ranking using cosine similarity (dot product) on normalized vectors
+
+This library is suitable for datasets up to 1,000,000 vectors. For larger datasets, consider using a dedicated vector database such as [Qdrant](https://qdrant.tech/).
 
 Search Benchmarks (384-dimensional vectors):
 Vectors | Time (seconds)
@@ -16,11 +22,14 @@ Vectors | Time (seconds)
 100000  | 0.06
 1000000 | 0.48
 
+### High Dimension Support
+The Hamming distance filtering implementation uses `VARBINARY` storage for binary codes, supporting up to 24,000 dimensions (limited by MySQL's InnoDB prefix index limit).
+
 ## Features
-- Store vectors in a MySQL database using JSON data types.
-- Calculate cosine similarity between vectors using a custom MySQL function.
-- Normalize vectors and handle vector operations such as insertion, deletion, and searching.
-- Support for vector quantization for optimized search operations.
+- Initialization of a vector table and a custom MySQL function in MySQL.
+- Vector operations: insertion, deletion, and search by cosine similarity.
+- Support for high-dimensional vectors (up to 24,000 dimensions).
+- Batch insert operations for efficient bulk vector storage.
 
 ## Requirements
 - PHP 8.0 or higher.
@@ -52,7 +61,14 @@ $vectorTable = new VectorTable($mysqli, $tableName, $dimension, $engine);
 ```
 
 ### Setting Up the Vector Table in MySQL
-The `initialize` method will create the vector table in MySQL if it does not already exist. This method will also create the `COSIM` function in MySQL if it does not already exist.
+The `initialize` method will create the vector table in MySQL if it does not already exist. This method will also create the `MV_DOT_PRODUCT` function in MySQL if it does not already exist.
+
+The table schema includes:
+- `id`: Auto-incrementing primary key
+- `normalized_vector`: JSON column storing the L2-normalized vector
+- `binary_code`: VARBINARY column storing the binary quantized representation for fast filtering
+- `created`: Timestamp of when the vector was inserted
+
 ```php
 $vectorTable->initialize();
 ```
@@ -65,6 +81,14 @@ $vectorId = $vectorTable->upsert($vector);
 
 // Update an existing vector
 $vectorTable->upsert($vector, $vectorId);
+
+// Batch insert multiple vectors for better performance
+$vectors = [
+    [0.1, 0.2, 0.3, ...],
+    [0.4, 0.5, 0.6, ...],
+    // ... more vectors
+];
+$vectorIds = $vectorTable->batchInsert($vectors);
 
 // Delete a vector
 $vectorTable->delete($vectorId);
@@ -81,6 +105,14 @@ Perform a search for vectors similar to a given vector using the cosine similari
 ```php
 // Find vectors similar to a given vector
 $similarVectors = $vectorTable->search($vector, $topN);
+
+// Results include:
+// - 'id': Vector ID
+// - 'normalized_vector': The stored normalized vector
+// - 'similarity': Cosine similarity score
+foreach ($similarVectors as $result) {
+    echo "Vector ID: {$result['id']}, Similarity: {$result['similarity']}\n";
+}
 ```
 
 
