@@ -282,9 +282,7 @@ class VectorTable
 
         $statement = $this->mysqli->prepare($insertQuery);
         if(!$statement) {
-            $e = new \Exception($this->mysqli->error);
-            $this->mysqli->rollback();
-            throw $e;
+            throw new \Exception($this->mysqli->error);
         }
 
         $normalizedVector = json_encode($normalizedVector);
@@ -386,9 +384,7 @@ class VectorTable
         $statement = $this->mysqli->prepare("SELECT id, normalized_vector, binary_code FROM $tableName");
 
         if (!$statement) {
-            $e = new \Exception($this->mysqli->error);
-            $this->mysqli->rollback();
-            throw $e;
+            throw new \Exception($this->mysqli->error);
         }
 
         $statement->execute();
