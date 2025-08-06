@@ -26,7 +26,8 @@ Vectors | Time (seconds)
 The Hamming distance filtering implementation uses `VARBINARY` storage for binary codes, supporting up to 24,000 dimensions (limited by MySQL's InnoDB prefix index limit).
 
 ## Features
-- Initialization of a vector table and a custom MySQL function in MySQL.
+- Management of database tables and functions.
+- Support for multiple vector tables within a single database.
 - Vector operations: insertion, deletion, and search by cosine similarity.
 - Support for high-dimensional vectors (up to 24,000 dimensions).
 - Batch insert operations for efficient bulk vector storage.
@@ -61,7 +62,24 @@ $vectorTable = new VectorTable($mysqli, $tableName, $dimension, $engine);
 ```
 
 ### Setting Up the Vector Table in MySQL
-The `initialize` method will create the vector table in MySQL if it does not already exist. This method will also create the `MV_DOT_PRODUCT` function in MySQL if it does not already exist.
+The library provides flexible initialization options for different use cases:
+
+#### Complete Initialization
+The `initialize` method creates both the vector table and the `MV_DOT_PRODUCT` function:
+```php
+$vectorTable->initialize();
+```
+
+#### Granular Initialization
+For more control, you can initialize tables and functions separately:
+```php
+// Initialize global MySQL functions (call once per database)
+VectorTable::initializeFunctions($mysqli);
+
+// Initialize tables for multiple vector tables
+$vectorTable1->initializeTables();
+$vectorTable2->initializeTables();
+```
 
 The table schema includes:
 - `id`: Auto-incrementing primary key
@@ -69,8 +87,17 @@ The table schema includes:
 - `binary_code`: VARBINARY column storing the binary quantized representation for fast filtering
 - `created`: Timestamp of when the vector was inserted
 
+#### Cleanup and Deinitialization
+The library provides comprehensive cleanup capabilities:
 ```php
-$vectorTable->initialize();
+// Clean up tables for this VectorTable instance
+$vectorTable->deinitializeTables();
+
+// Clean up global MySQL functions
+VectorTable::deinitializeFunctions($mysqli);
+
+// Complete cleanup (tables + functions)
+$vectorTable->deinitialize();
 ```
 
 ### Inserting and Managing Vectors
@@ -101,7 +128,7 @@ $similarity = $vectorTable->cosim($vector1, $vector2);
 ```
 
 ### Searching for Similar Vectors
-Perform a search for vectors similar to a given vector using the cosine similarity criteria. The `topN` parameter specifies the maximum number of similar vectors to return.
+Perform a search for vectors similar to a given vector using the two-stage cosine similarity algorithm. The `topN` parameter specifies the maximum number of similar vectors to return.
 ```php
 // Find vectors similar to a given vector
 $similarVectors = $vectorTable->search($vector, $topN);
@@ -113,6 +140,22 @@ $similarVectors = $vectorTable->search($vector, $topN);
 foreach ($similarVectors as $result) {
     echo "Vector ID: {$result['id']}, Similarity: {$result['similarity']}\n";
 }
+```
+
+### Additional Operations
+```php
+// Count total vectors in the table
+$totalVectors = $vectorTable->count();
+
+// Select specific vectors by ID
+$vectors = $vectorTable->select([1, 2, 3]);
+
+// Select all vectors
+$allVectors = $vectorTable->selectAll();
+
+// Get table name and dimension
+$tableName = $vectorTable->getVectorTableName();
+$dimension = $vectorTable->getDimension();
 ```
 
 
