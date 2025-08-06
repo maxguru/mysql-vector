@@ -488,7 +488,6 @@ class VectorTable
      * @param int $n Maximum number of results to return (default: 10)
      * @return array Array of results, each containing:
      *               - 'id': Vector ID
-     *               - 'vector': Original vector
      *               - 'normalized_vector': L2-normalized vector
      *               - 'similarity': Cosine similarity [-1, 1]
      * @throws \Exception If database operations fail or invalid input
@@ -503,55 +502,37 @@ class VectorTable
         if ($n <= 0) {
             throw new \InvalidArgumentException("Number of results must be positive");
         }
+
         $escapedTableName = $this->escapeIdentifier($this->getVectorTableName());
         $normalizedVector = $this->normalize($vector);
         $binaryCode = $this->vectorToHex($normalizedVector);
+        $normalizedVectorJson = json_encode($normalizedVector);
 
-        // Initial search using binary codes
-        $statement = $this->mysqli->prepare("SELECT id, BIT_COUNT(binary_code ^ UNHEX(?)) AS hamming_distance FROM {$escapedTableName} ORDER BY hamming_distance LIMIT ?");
-
-        if(!$statement) {
-            throw new \Exception("Failed to prepare Hamming distance query: " . $this->mysqli->error);
-        }
-
-        $statement->bind_param('si', $binaryCode, $n);
-        $statement->execute();
-        $statement->bind_result($vectorId, $hd);
-
-        $candidates = [];
-        while ($statement->fetch()) {
-            $candidates[] = $vectorId;
-        }
-        $statement->close();
-
-        // Handle case where no candidates are found
-        if (empty($candidates)) {
-            return [];
-        }
-
-        // Rerank candidates using cosine similarity (dot product of normalized vectors)
-        $placeholders = implode(',', array_fill(0, count($candidates), '?'));
         $sql = "
-        SELECT id, normalized_vector, MV_DOT_PRODUCT(normalized_vector, ?) AS similarity
-        FROM {$escapedTableName}
-        WHERE id IN ({$placeholders})
+        SELECT
+            candidates.id,
+            candidates.normalized_vector,
+            MV_DOT_PRODUCT(candidates.normalized_vector, ?) AS similarity
+        FROM (
+            SELECT
+                id,
+                normalized_vector,
+                BIT_COUNT(binary_code ^ UNHEX(?)) AS hamming_distance
+            FROM {$escapedTableName}
+            ORDER BY hamming_distance
+            LIMIT ?
+        ) AS candidates
         ORDER BY similarity DESC
         LIMIT ?";
 
         $statement = $this->mysqli->prepare($sql);
 
-        if(!$statement) {
-            throw new \Exception("Failed to prepare dot product query: " . $this->mysqli->error);
+        if (!$statement) {
+            throw new \Exception("Failed to prepare search query: " . $this->mysqli->error);
         }
 
-        $normalizedVectorJson = json_encode($normalizedVector);
-
-        $types = str_repeat('i', count($candidates));
-        $params = array_merge([$normalizedVectorJson], $candidates, [$n]);
-        $statement->bind_param('s' . $types . 'i', ...$params);
-
+        $statement->bind_param('ssii', $normalizedVectorJson, $binaryCode, $n, $n);
         $statement->execute();
-
         $statement->bind_result($id, $nv, $sim);
 
         $results = [];
