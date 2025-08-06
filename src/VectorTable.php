@@ -544,10 +544,10 @@ class VectorTable
             throw new \Exception("Failed to prepare dot product query: " . $this->mysqli->error);
         }
 
-        $normalizedVector = json_encode($normalizedVector);
+        $normalizedVectorJson = json_encode($normalizedVector);
 
         $types = str_repeat('i', count($candidates));
-        $params = array_merge([$normalizedVector], $candidates, [$n]);
+        $params = array_merge([$normalizedVectorJson], $candidates, [$n]);
         $statement->bind_param('s' . $types . 'i', ...$params);
 
         $statement->execute();
