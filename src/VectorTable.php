@@ -309,13 +309,13 @@ class VectorTable
     public function batchInsert(array $vectorArray): array {
         $tableName = $this->getVectorTableName();
 
-        $statement = $this->getConnection()->prepare("INSERT INTO $tableName (normalized_vector, binary_code) VALUES (?, UNHEX(?))");
+        $statement = $this->mysqli->prepare("INSERT INTO $tableName (normalized_vector, binary_code) VALUES (?, UNHEX(?))");
         if(!$statement) {
-            throw new \Exception("Prepare failed: " . $this->getConnection()->error);
+            throw new \Exception("Prepare failed: " . $this->mysqli->error);
         }
 
         $ids = [];
-        $this->getConnection()->begin_transaction();
+        $this->mysqli->begin_transaction();
         try {
             foreach ($vectorArray as $vector) {
                 $normalizedVector = $this->normalize($vector);
@@ -331,9 +331,9 @@ class VectorTable
                 $ids[] = $statement->insert_id;
             }
 
-            $this->getConnection()->commit();
+            $this->mysqli->commit();
         } catch (\Exception $e) {
-            $this->getConnection()->rollback();
+            $this->mysqli->rollback();
             throw $e;
         } finally {
             $statement->close();
