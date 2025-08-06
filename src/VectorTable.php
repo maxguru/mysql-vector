@@ -65,29 +65,27 @@ class VectorTable
         $this->engine = $engine;
     }
 
+    /**
+     * Escape MySQL identifier using backticks
+     *
+     * @param string $identifier The identifier to escape
+     * @return string The escaped identifier
+     */
+    private function escapeIdentifier(string $identifier): string
+    {
+        // For identifiers, escape backticks by doubling them, then wrap in backticks
+        $escaped = str_replace('`', '``', $identifier);
+        return "`$escaped`";
+    }
+
     public function getVectorTableName(): string
     {
-        return sprintf('%s_vectors', $this->name);
+        return $this->name . '_vectors';
     }
 
     public function getDimension(): int
     {
         return $this->dimension;
-    }
-
-    protected function getCreateStatements(bool $ifNotExists = true): array {
-        $binaryCodeLengthInBytes = ceil($this->dimension / 8);
-
-        $vectorsQuery =
-            "CREATE TABLE %s %s (
-                id INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
-                normalized_vector JSON,
-                binary_code VARBINARY(%d),
-                created TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-            ) ENGINE=%s;";
-        $vectorsQuery = sprintf($vectorsQuery, $ifNotExists ? 'IF NOT EXISTS' : '', $this->getVectorTableName(), $binaryCodeLengthInBytes, $this->engine);
-
-        return [$vectorsQuery];
     }
 
     /**
@@ -121,13 +119,31 @@ class VectorTable
     public function initializeTables(bool $ifNotExists = true): void
     {
         $this->mysqli->begin_transaction();
+
         try {
-            foreach ($this->getCreateStatements($ifNotExists) as $statement) {
-                $success = $this->mysqli->query($statement);
-                if (!$success) {
-                    throw new \Exception($this->mysqli->error);
-                }
+            // Build all SQL statements for single multi-query execution with proper escaping
+            $binaryCodeLengthInBytes = ceil($this->dimension / 8);
+            $escapedVectorTableName = $this->escapeIdentifier($this->getVectorTableName());
+            $engine = $this->escapeIdentifier($this->engine);
+
+            $ifNotExistsClause = $ifNotExists ? 'IF NOT EXISTS' : '';
+
+            // Execute all statements in single multi-query
+            $queries = "
+                CREATE TABLE {$ifNotExistsClause} {$escapedVectorTableName} (
+                    id INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+                    normalized_vector JSON,
+                    binary_code VARBINARY({$binaryCodeLengthInBytes}),
+                    created TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                ) ENGINE={$engine};
+            ";
+
+            if (!$this->mysqli->multi_query($queries)) {
+                throw new \Exception("Failed to initialize tables: " . $this->mysqli->error);
             }
+
+            // Clear all results from multi-query
+            do { if ($result = $this->mysqli->store_result()) { $result->free(); } } while ($this->mysqli->next_result());
 
             $this->mysqli->commit();
         } catch (\Exception $e) {
@@ -145,14 +161,20 @@ class VectorTable
     public static function initializeFunctions(\mysqli $mysqli): void
     {
         $mysqli->begin_transaction();
-        try {
-            // Add MV_DOT_PRODUCT function
-            $mysqli->query("DROP FUNCTION IF EXISTS MV_DOT_PRODUCT");
-            $res = $mysqli->query(self::SQL_DOT_PRODUCT_FUNCTION);
 
-            if (!$res) {
-                throw new \Exception("Failed to create MV_DOT_PRODUCT function: " . $mysqli->error);
+        try {
+            // Execute all DROP and CREATE statements in a single multi-statement query
+            $queries = "
+                DROP FUNCTION IF EXISTS MV_DOT_PRODUCT;
+                " . self::SQL_DOT_PRODUCT_FUNCTION . ";
+            ";
+
+            if (!$mysqli->multi_query($queries)) {
+                throw new \Exception("Failed to initialize functions: " . $mysqli->error);
             }
+
+            // Clear all results from multi-query
+            do { if ($result = $mysqli->store_result()) { $result->free(); } } while ($mysqli->next_result());
 
             $mysqli->commit();
         } catch (\Exception $e) {
@@ -183,12 +205,20 @@ class VectorTable
      */
     public function deinitializeTables(): void
     {
-        $tableName = $this->getVectorTableName();
-
         $this->mysqli->begin_transaction();
+
         try {
-            // Drop the main vector table
-            $this->mysqli->query("DROP TABLE IF EXISTS " . $tableName);
+            // Drop table with proper escaping
+            $escapedVectorTableName = $this->escapeIdentifier($this->getVectorTableName());
+
+            $queries = "DROP TABLE IF EXISTS {$escapedVectorTableName};";
+
+            if (!$this->mysqli->multi_query($queries)) {
+                throw new \Exception("Failed to drop tables: " . $this->mysqli->error);
+            }
+
+            // Clear all results from multi-query
+            do { if ($result = $this->mysqli->store_result()) { $result->free(); } } while ($this->mysqli->next_result());
 
             $this->mysqli->commit();
         } catch (\Exception $e) {
@@ -206,9 +236,17 @@ class VectorTable
     public static function deinitializeFunctions(\mysqli $mysqli): void
     {
         $mysqli->begin_transaction();
+
         try {
-            // Drop global functions
-            $mysqli->query("DROP FUNCTION IF EXISTS MV_DOT_PRODUCT");
+            // Drop all functions in single multi-query
+            $queries = "DROP FUNCTION IF EXISTS MV_DOT_PRODUCT;";
+
+            if (!$mysqli->multi_query($queries)) {
+                throw new \Exception("Failed to drop functions: " . $mysqli->error);
+            }
+
+            // Clear all results from multi-query
+            do { if ($result = $mysqli->store_result()) { $result->free(); } } while ($mysqli->next_result());
 
             $mysqli->commit();
         } catch (\Exception $e) {
@@ -274,20 +312,24 @@ class VectorTable
     {
         $normalizedVector = $this->normalize($vector);
         $binaryCode = $this->vectorToHex($normalizedVector);
-        $tableName = $this->getVectorTableName();
+        $escapedTableName = $this->escapeIdentifier($this->getVectorTableName());
 
         $insertQuery = empty($id) ?
-            "INSERT INTO $tableName (normalized_vector, binary_code) VALUES (?, UNHEX(?))" :
-            "UPDATE $tableName SET normalized_vector = ?, binary_code = UNHEX(?) WHERE id = $id";
+            "INSERT INTO {$escapedTableName} (normalized_vector, binary_code) VALUES (?, UNHEX(?))" :
+            "UPDATE {$escapedTableName} SET normalized_vector = ?, binary_code = UNHEX(?) WHERE id = ?";
 
         $statement = $this->mysqli->prepare($insertQuery);
         if(!$statement) {
             throw new \Exception($this->mysqli->error);
         }
 
-        $normalizedVector = json_encode($normalizedVector);
+        $normalizedVectorJson = json_encode($normalizedVector);
 
-        $statement->bind_param('ss', $normalizedVector, $binaryCode);
+        if(empty($id)) {
+            $statement->bind_param('ss', $normalizedVectorJson, $binaryCode);
+        } else {
+            $statement->bind_param('ssi', $normalizedVectorJson, $binaryCode, $id);
+        }
 
         $success = $statement->execute();
         if(!$success) {
@@ -307,16 +349,17 @@ class VectorTable
      * @throws \Exception
      */
     public function batchInsert(array $vectorArray): array {
-        $tableName = $this->getVectorTableName();
-
-        $statement = $this->mysqli->prepare("INSERT INTO $tableName (normalized_vector, binary_code) VALUES (?, UNHEX(?))");
-        if(!$statement) {
-            throw new \Exception("Prepare failed: " . $this->mysqli->error);
-        }
-
         $ids = [];
+
         $this->mysqli->begin_transaction();
+
         try {
+            $escapedTableName = $this->escapeIdentifier($this->getVectorTableName());
+            $statement = $this->mysqli->prepare("INSERT INTO {$escapedTableName} (normalized_vector, binary_code) VALUES (?, UNHEX(?))");
+            if(!$statement) {
+                throw new \Exception("Prepare failed: " . $this->mysqli->error);
+            }
+
             foreach ($vectorArray as $vector) {
                 $normalizedVector = $this->normalize($vector);
                 $binaryCode = $this->vectorToHex($normalizedVector);
@@ -349,16 +392,17 @@ class VectorTable
      * @return array Array of vectors
      */
     public function select(array $ids): array {
-        $tableName = $this->getVectorTableName();
 
         $placeholders = implode(', ', array_fill(0, count($ids), '?'));
-        $statement = $this->mysqli->prepare("SELECT id, normalized_vector, binary_code FROM $tableName WHERE id IN ($placeholders)");
+        $escapedVectorTableName = $this->escapeIdentifier($this->getVectorTableName());
+        $statement = $this->mysqli->prepare("SELECT id, normalized_vector, binary_code FROM {$escapedVectorTableName} WHERE id IN ({$placeholders})");
         $types = str_repeat('i', count($ids));
 
         $refs = [];
-        foreach ($ids as $key => $id) {
-            $refs[$key] = &$ids[$key];
+        foreach ($ids as $key => &$id) {
+            $refs[$key] = &$id;
         }
+        unset($id);
 
         call_user_func_array([$statement, 'bind_param'], array_merge([$types], $refs));
         $statement->execute();
@@ -379,9 +423,9 @@ class VectorTable
     }
 
     public function selectAll(): array {
-        $tableName = $this->getVectorTableName();
 
-        $statement = $this->mysqli->prepare("SELECT id, normalized_vector, binary_code FROM $tableName");
+        $escapedVectorTableName = $this->escapeIdentifier($this->getVectorTableName());
+        $statement = $this->mysqli->prepare("SELECT id, normalized_vector, binary_code FROM {$escapedVectorTableName}");
 
         if (!$statement) {
             throw new \Exception($this->mysqli->error);
@@ -409,8 +453,8 @@ class VectorTable
      * @return int The number of vectors
      */
     public function count(): int {
-        $tableName = $this->getVectorTableName();
-        $statement = $this->mysqli->prepare("SELECT COUNT(id) FROM $tableName");
+        $escapedVectorTableName = $this->escapeIdentifier($this->getVectorTableName());
+        $statement = $this->mysqli->prepare("SELECT COUNT(id) FROM {$escapedVectorTableName}");
         $statement->execute();
         $statement->bind_result($count);
         $statement->fetch();
@@ -459,18 +503,18 @@ class VectorTable
         if ($n <= 0) {
             throw new \InvalidArgumentException("Number of results must be positive");
         }
-        $tableName = $this->getVectorTableName();
+        $escapedTableName = $this->escapeIdentifier($this->getVectorTableName());
         $normalizedVector = $this->normalize($vector);
         $binaryCode = $this->vectorToHex($normalizedVector);
 
         // Initial search using binary codes
-        $statement = $this->mysqli->prepare("SELECT id, BIT_COUNT(binary_code ^ UNHEX(?)) AS hamming_distance FROM $tableName ORDER BY hamming_distance LIMIT $n");
+        $statement = $this->mysqli->prepare("SELECT id, BIT_COUNT(binary_code ^ UNHEX(?)) AS hamming_distance FROM {$escapedTableName} ORDER BY hamming_distance LIMIT ?");
 
         if(!$statement) {
             throw new \Exception("Failed to prepare Hamming distance query: " . $this->mysqli->error);
         }
 
-        $statement->bind_param('s', $binaryCode);
+        $statement->bind_param('si', $binaryCode, $n);
         $statement->execute();
         $statement->bind_result($vectorId, $hd);
 
@@ -489,11 +533,10 @@ class VectorTable
         $placeholders = implode(',', array_fill(0, count($candidates), '?'));
         $sql = "
         SELECT id, normalized_vector, MV_DOT_PRODUCT(normalized_vector, ?) AS similarity
-        FROM %s
-        WHERE id IN ($placeholders)
+        FROM {$escapedTableName}
+        WHERE id IN ({$placeholders})
         ORDER BY similarity DESC
-        LIMIT $n";
-        $sql = sprintf($sql, $tableName);
+        LIMIT ?";
 
         $statement = $this->mysqli->prepare($sql);
 
@@ -504,7 +547,8 @@ class VectorTable
         $normalizedVector = json_encode($normalizedVector);
 
         $types = str_repeat('i', count($candidates));
-        $statement->bind_param('s' . $types, $normalizedVector, ...$candidates);
+        $params = array_merge([$normalizedVector], $candidates, [$n]);
+        $statement->bind_param('s' . $types . 'i', ...$params);
 
         $statement->execute();
 
@@ -557,8 +601,8 @@ class VectorTable
      * @throws \Exception
      */
     public function delete(int $id): void {
-        $tableName = $this->getVectorTableName();
-        $statement = $this->mysqli->prepare("DELETE FROM $tableName WHERE id = ?");
+        $escapedVectorTableName = $this->escapeIdentifier($this->getVectorTableName());
+        $statement = $this->mysqli->prepare("DELETE FROM {$escapedVectorTableName} WHERE id = ?");
         $statement->bind_param('i', $id);
         $success = $statement->execute();
         if(!$success) {
