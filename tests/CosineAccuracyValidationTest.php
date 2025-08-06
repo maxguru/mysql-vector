@@ -16,10 +16,6 @@ use MHz\MysqlVector\VectorTable;
  * accurate and reliable compared to established mathematical libraries. This serves as a
  * mathematical correctness validation to catch any implementation bugs or precision issues.
  *
- * ## Updated Implementation
- * The COSIM function has been corrected to calculate true cosine similarity: (A·B) / (||A|| × ||B||)
- * This test validates the corrected implementation against NumPy reference values.
- *
  * ## Test Coverage
  * - **Edge Cases**: Zero vectors, unit vectors, identical vectors, orthogonal vectors
  * - **Corner Cases**: Epsilon-magnitude vectors, extreme values, mixed magnitudes
@@ -54,6 +50,7 @@ use MHz\MysqlVector\VectorTable;
 class CosineAccuracyValidationTest extends BaseVectorTest
 {
     private array $referenceData;
+    private array $dimensionTables = []; // Track VectorTable instances by dimension
     private const FLOAT_TOLERANCE = 1e-6;
     private const SEARCH_TOLERANCE = 1e-5; // Slightly more lenient for search results
 
@@ -69,8 +66,6 @@ class CosineAccuracyValidationTest extends BaseVectorTest
         echo "NumPy version: " . $this->referenceData['metadata']['numpy_version'] . "\n";
         echo "Float tolerance: " . self::FLOAT_TOLERANCE . "\n\n";
     }
-
-
 
     /**
      * Load and validate reference test data from JSON file
@@ -96,20 +91,37 @@ class CosineAccuracyValidationTest extends BaseVectorTest
     }
 
     /**
-     * Calculate dot product of two vectors (what COSIM actually returns)
+     * Calculate cosine similarity using PHP reference implementation
+     * This serves as the "ground truth" for comparison against MySQL results
      */
-    private function calculateDotProduct(array $v1, array $v2): float
+    private function calculateCosineSimilarity(array $v1, array $v2): float
     {
         if (count($v1) !== count($v2)) {
             throw new \InvalidArgumentException("Vector dimensions must match");
         }
 
         $dotProduct = 0.0;
+        $magnitude1 = 0.0;
+        $magnitude2 = 0.0;
+
         for ($i = 0; $i < count($v1); $i++) {
             $dotProduct += $v1[$i] * $v2[$i];
+            $magnitude1 += $v1[$i] * $v1[$i];
+            $magnitude2 += $v2[$i] * $v2[$i];
         }
 
-        return $dotProduct;
+        $magnitude1 = sqrt($magnitude1);
+        $magnitude2 = sqrt($magnitude2);
+
+        // Handle zero vectors
+        if ($magnitude1 == 0.0 || $magnitude2 == 0.0) {
+            return 0.0;
+        }
+
+        $result = $dotProduct / ($magnitude1 * $magnitude2);
+
+        // Clamp to valid range [-1, 1]
+        return max(-1.0, min(1.0, $result));
     }
 
     /**
@@ -123,8 +135,6 @@ class CosineAccuracyValidationTest extends BaseVectorTest
         }
         return sqrt($sum);
     }
-
-
 
     /**
      * Test: Direct cosine similarity method accuracy
@@ -158,9 +168,14 @@ class CosineAccuracyValidationTest extends BaseVectorTest
             echo "Testing: {$description} ({$category}) [dim=" . count($vector1) . "]\n";
 
             try {
-                // Create VectorTable for current dimension
+                // Get or create VectorTable for this dimension
                 $currentDim = count($vector1);
-                $vectorTable = $this->makeTable('cosine_accuracy_test', $currentDim);
+                $tableKey = "direct_cosine_dim_{$currentDim}";
+
+                if (!isset($this->dimensionTables[$tableKey])) {
+                    $this->dimensionTables[$tableKey] = $this->makeTable('cosine_accuracy_test', $currentDim);
+                }
+                $vectorTable = $this->dimensionTables[$tableKey];
 
                 // Calculate actual cosine similarity using MySQL Vector library
                 $actualSimilarity = $vectorTable->cosim($vector1, $vector2);
@@ -264,8 +279,9 @@ class CosineAccuracyValidationTest extends BaseVectorTest
 
             echo "Edge case: {$testType}\n";
 
-            $vectorTable = $this->makeTable('edge_case_test', count($vector1));
-            $actual = $vectorTable->cosim($vector1, $vector2);
+            // Create temporary VectorTable instance for cosim() call (no tables needed)
+            $tempVectorTable = new VectorTable(self::$mysqli, 'temp', count($vector1));
+            $actual = $tempVectorTable->cosim($vector1, $vector2);
 
             echo "  Expected similarity: " . number_format($expected, 8) . "\n";
             echo "  Actual similarity:   " . ($actual === null ? "NULL" : number_format($actual, 8)) . "\n";
@@ -313,9 +329,14 @@ class CosineAccuracyValidationTest extends BaseVectorTest
 
             echo "Search test: {$description}\n";
 
-            // Create VectorTable for current dimension
+            // Get or create VectorTable for this dimension
             $dimension = count($vector1);
-            $vectorTable = $this->makeTable('cosine_search_test', $dimension);
+            $tableKey = "search_similarity_dim_{$dimension}";
+
+            if (!isset($this->dimensionTables[$tableKey])) {
+                $this->dimensionTables[$tableKey] = $this->makeTable('cosine_search_test', $dimension);
+            }
+            $vectorTable = $this->dimensionTables[$tableKey];
 
             // Insert vector2 into database
             $vectorId = $vectorTable->upsert($vector2);
@@ -342,6 +363,9 @@ class CosineAccuracyValidationTest extends BaseVectorTest
             );
 
             echo "  ✓ PASSED\n";
+
+            // Clean up for next test
+            $vectorTable->delete($vectorId);
         }
     }
 
@@ -359,8 +383,9 @@ class CosineAccuracyValidationTest extends BaseVectorTest
         $vector3d = [1.0, 2.0, 3.0];
         $vector4d = [1.0, 2.0, 3.0, 4.0];
 
-        $vectorTable = $this->makeTable('dimension_mismatch_test', 3);
-        $result = $vectorTable->cosim($vector3d, $vector4d);
+        // Create temporary VectorTable instance for cosim() call (no tables needed)
+        $tempVectorTable = new VectorTable(self::$mysqli, 'temp', 3);
+        $result = $tempVectorTable->cosim($vector3d, $vector4d);
         // MySQL MV_DOT_PRODUCT function should return NULL for mismatched dimensions
         if ($result === null) {
             echo "  ✓ Mismatched dimensions handled correctly (returned NULL)\n";
@@ -371,8 +396,9 @@ class CosineAccuracyValidationTest extends BaseVectorTest
         // Test empty vectors
         echo "Testing empty vectors...\n";
         try {
-            $vectorTable = $this->makeTable('empty_vector_test', 1);
-            $result = $vectorTable->cosim([], []);
+            // Create temporary VectorTable instance for cosim() call (no tables needed)
+            $tempVectorTable = new VectorTable(self::$mysqli, 'temp', 1);
+            $result = $tempVectorTable->cosim([], []);
             echo "  Empty vectors result: " . ($result === null ? "NULL" : $result) . "\n";
         } catch (\Exception $e) {
             echo "  ✓ Empty vectors handled with exception: " . $e->getMessage() . "\n";
@@ -382,8 +408,9 @@ class CosineAccuracyValidationTest extends BaseVectorTest
         echo "Testing single element vectors...\n";
         $single1 = [5.0];
         $single2 = [3.0];
-        $vectorTable = $this->makeTable('single_element_test', 1);
-        $result = $vectorTable->cosim($single1, $single2);
+        // Create temporary VectorTable instance for cosim() call (no tables needed)
+        $tempVectorTable = new VectorTable(self::$mysqli, 'temp', 1);
+        $result = $tempVectorTable->cosim($single1, $single2);
 
         // For single element vectors with same sign, cosine similarity should be 1.0
         // cos(θ) = (5*3) / (sqrt(5²) * sqrt(3²)) = 15 / (5 * 3) = 1.0
@@ -412,12 +439,28 @@ class CosineAccuracyValidationTest extends BaseVectorTest
         $smallVec1 = [$epsilon, $epsilon * 2, $epsilon * 3];
         $smallVec2 = [$epsilon * 2, $epsilon, $epsilon * 4];
 
-        $vectorTable = $this->makeTable('small_magnitude_test', 3);
-        $result = $vectorTable->cosim($smallVec1, $smallVec2);
-        $expectedDotProduct = $this->calculateDotProduct($smallVec1, $smallVec2);
-        echo "  Expected dot product: " . number_format($expectedDotProduct, 15) . "\n";
-        echo "  Actual result:        " . number_format($result, 15) . "\n";
-        echo "  ✓ Small values handled (result is numeric)\n";
+        // Create temporary VectorTable instance for cosim() call (no tables needed)
+        $tempVectorTable = new VectorTable(self::$mysqli, 'temp', 3);
+        $mysqlResult = $tempVectorTable->cosim($smallVec1, $smallVec2);
+        $phpReference = $this->calculateCosineSimilarity($smallVec1, $smallVec2);
+        echo "  PHP reference:  " . number_format($phpReference, 15) . "\n";
+        echo "  MySQL result:   " . number_format($mysqlResult, 15) . "\n";
+
+        // Assert that result is numeric and within reasonable bounds
+        if (!is_float($mysqlResult)) {
+            throw new \Exception("Small values should return numeric result, got: " . gettype($mysqlResult));
+        }
+        if ($mysqlResult < -1.0 || $mysqlResult > 1.0) {
+            throw new \Exception("Cosine similarity should be in [-1, 1], got: $mysqlResult");
+        }
+
+        // Assert that MySQL result matches PHP reference within tolerance
+        $error = abs($phpReference - $mysqlResult);
+        echo "  Error:          " . number_format($error, 15) . "\n";
+        if ($error > 1e-6) {
+            throw new \Exception("MySQL result differs too much from PHP reference. Error: $error");
+        }
+        echo "  ✓ Small values handled correctly\n";
 
         // Test very large values
         echo "Testing very large values...\n";
@@ -425,24 +468,56 @@ class CosineAccuracyValidationTest extends BaseVectorTest
         $largeVec1 = [$large, $large * 2, $large * 0.5];
         $largeVec2 = [$large * 0.8, $large * 1.5, $large * 0.3];
 
-        $vectorTable = $this->makeTable('large_magnitude_test', 3);
-        $result = $vectorTable->cosim($largeVec1, $largeVec2);
-        $expectedDotProduct = $this->calculateDotProduct($largeVec1, $largeVec2);
-        echo "  Expected dot product: " . number_format($expectedDotProduct, 2) . "\n";
-        echo "  Actual result:        " . number_format($result, 2) . "\n";
-        echo "  ✓ Large values handled (result is numeric)\n";
+        // Create temporary VectorTable instance for cosim() call (no tables needed)
+        $tempVectorTable = new VectorTable(self::$mysqli, 'temp', 3);
+        $mysqlResult = $tempVectorTable->cosim($largeVec1, $largeVec2);
+        $phpReference = $this->calculateCosineSimilarity($largeVec1, $largeVec2);
+        echo "  PHP reference:  " . number_format($phpReference, 8) . "\n";
+        echo "  MySQL result:   " . number_format($mysqlResult, 8) . "\n";
+
+        // Assert that result is numeric and within bounds
+        if (!is_float($mysqlResult)) {
+            throw new \Exception("Large values should return numeric result, got: " . gettype($mysqlResult));
+        }
+        if ($mysqlResult < -1.0 || $mysqlResult > 1.0) {
+            throw new \Exception("Cosine similarity should be in [-1, 1], got: $mysqlResult");
+        }
+
+        // Assert that MySQL result matches PHP reference within tolerance
+        $error = abs($phpReference - $mysqlResult);
+        echo "  Error:          " . number_format($error, 10) . "\n";
+        if ($error > 1e-6) {
+            throw new \Exception("MySQL result differs too much from PHP reference. Error: $error");
+        }
+        echo "  ✓ Large values handled correctly\n";
 
         // Test mixed precision values
         echo "Testing mixed precision values...\n";
         $mixedVec1 = [1e-6, 1e3, 1.0];
         $mixedVec2 = [1e3, 1e-6, 1.0];
 
-        $vectorTable = $this->makeTable('mixed_magnitude_test', 3);
-        $result = $vectorTable->cosim($mixedVec1, $mixedVec2);
-        $expectedDotProduct = $this->calculateDotProduct($mixedVec1, $mixedVec2);
-        echo "  Expected dot product: " . number_format($expectedDotProduct, 8) . "\n";
-        echo "  Actual result:        " . number_format($result, 8) . "\n";
-        echo "  ✓ Mixed precision handled (result is numeric)\n";
+        // Create temporary VectorTable instance for cosim() call (no tables needed)
+        $tempVectorTable = new VectorTable(self::$mysqli, 'temp', 3);
+        $mysqlResult = $tempVectorTable->cosim($mixedVec1, $mixedVec2);
+        $phpReference = $this->calculateCosineSimilarity($mixedVec1, $mixedVec2);
+        echo "  PHP reference:  " . number_format($phpReference, 8) . "\n";
+        echo "  MySQL result:   " . number_format($mysqlResult, 8) . "\n";
+
+        // Assert that result is numeric and within bounds
+        if (!is_float($mysqlResult)) {
+            throw new \Exception("Mixed precision values should return numeric result, got: " . gettype($mysqlResult));
+        }
+        if ($mysqlResult < -1.0 || $mysqlResult > 1.0) {
+            throw new \Exception("Cosine similarity should be in [-1, 1], got: $mysqlResult");
+        }
+
+        // Assert that MySQL result matches PHP reference within tolerance
+        $error = abs($phpReference - $mysqlResult);
+        echo "  Error:          " . number_format($error, 10) . "\n";
+        if ($error > 1e-6) {
+            throw new \Exception("MySQL result differs too much from PHP reference. Error: $error");
+        }
+        echo "  ✓ Mixed precision handled correctly\n";
     }
 
     /**
@@ -463,15 +538,15 @@ class CosineAccuracyValidationTest extends BaseVectorTest
             $vector1 = array_fill(0, $dim, 0.5);
             $vector2 = array_fill(0, $dim, 0.3);
 
-            // Create VectorTable for this dimension
-            $vectorTable = $this->makeTable('performance_test', $dim);
-
             // Measure performance
             $startTime = microtime(true);
             $iterations = 10;
 
+            // Create temporary VectorTable instance for cosim() call (no tables needed)
+            $tempVectorTable = new VectorTable(self::$mysqli, 'temp', $dim);
+
             for ($i = 0; $i < $iterations; $i++) {
-                $result = $vectorTable->cosim($vector1, $vector2);
+                $result = $tempVectorTable->cosim($vector1, $vector2);
             }
 
             $endTime = microtime(true);
@@ -481,14 +556,20 @@ class CosineAccuracyValidationTest extends BaseVectorTest
             echo "  Average time: " . number_format($avgTime * 1000, 3) . "ms\n";
             echo "  Result: " . number_format($result, 6) . "\n";
 
-            // Validate result is reasonable (should be positive dot product for positive vectors)
-            $expectedDotProduct = $this->calculateDotProduct($vector1, $vector2);
-            echo "  Expected dot product: " . number_format($expectedDotProduct, 6) . "\n";
+            // Validate result accuracy against PHP reference
+            $phpReference = $this->calculateCosineSimilarity($vector1, $vector2);
+            echo "  PHP reference: " . number_format($phpReference, 6) . "\n";
+            echo "  MySQL result:  " . number_format($result, 6) . "\n";
 
-            if (is_numeric($result) && $result > 0) {
-                echo "  ✓ Performance test passed (positive result for positive vectors)\n";
+            // Validate accuracy
+            $error = abs($phpReference - $result);
+            echo "  Error:         " . number_format($error, 8) . "\n";
+
+            if (is_numeric($result) && $error < 1e-5) {
+                echo "  ✓ Performance test passed (accurate result within tolerance)\n";
             } else {
-                echo "  ✗ Performance test failed (unexpected result)\n";
+                echo "  ✗ Performance test failed (error too large: $error)\n";
+                throw new \Exception("Performance test accuracy check failed. Error: $error");
             }
         }
 
@@ -537,8 +618,9 @@ class CosineAccuracyValidationTest extends BaseVectorTest
             try {
                 // Calculate expected cosine similarity
                 $expected = $testCase['expected_similarity'];
-                $vectorTable = $this->makeTable('summary_test', count($vector1));
-                $actual = $vectorTable->cosim($vector1, $vector2);
+                // Create temporary VectorTable instance for cosim() call (no tables needed)
+                $tempVectorTable = new VectorTable(self::$mysqli, 'temp', count($vector1));
+                $actual = $tempVectorTable->cosim($vector1, $vector2);
 
                 // Handle null results
                 if ($actual === null) {
