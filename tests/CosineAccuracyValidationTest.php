@@ -383,14 +383,13 @@ class CosineAccuracyValidationTest extends BaseVectorTest
         $vector3d = [1.0, 2.0, 3.0];
         $vector4d = [1.0, 2.0, 3.0, 4.0];
 
-        // Create temporary VectorTable instance for cosim() call (no tables needed)
-        $tempVectorTable = new VectorTable(self::$mysqli, 'temp', 3);
-        $result = $tempVectorTable->cosim($vector3d, $vector4d);
-        // MySQL MV_DOT_PRODUCT function should return NULL for mismatched dimensions
-        if ($result === null) {
-            echo "  ✓ Mismatched dimensions handled correctly (returned NULL)\n";
-        } else {
-            echo "  ✗ FAILED: Expected NULL for mismatched dimensions, got: " . $result . "\n";
+        try {
+            // Create temporary VectorTable instance for cosim() call (no tables needed)
+            $tempVectorTable = new VectorTable(self::$mysqli, 'temp', 3);
+            $result = $tempVectorTable->cosim($vector3d, $vector4d);
+            echo "  ✗ FAILED: Expected InvalidArgumentException for mismatched dimensions, got: " . $result . "\n";
+        } catch (\InvalidArgumentException $e) {
+            echo "  ✓ Mismatched dimensions handled correctly with exception: " . $e->getMessage() . "\n";
         }
 
         // Test empty vectors

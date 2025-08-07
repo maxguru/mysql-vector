@@ -19,10 +19,6 @@ class VectorTable
             DECLARE i INT DEFAULT 0;
             DECLARE len INT DEFAULT JSON_LENGTH(v1);
 
-            IF JSON_LENGTH(v1) != JSON_LENGTH(v2) THEN
-                RETURN NULL;
-            END IF;
-
             WHILE i < len DO
                 SET sim = sim + (JSON_EXTRACT(v1, CONCAT('$[', i, ']')) * JSON_EXTRACT(v2, CONCAT('$[', i, ']')));
                 SET i = i + 1;
@@ -282,6 +278,15 @@ class VectorTable
      */
     public function cosim(array $v1, array $v2): ?float
     {
+        // Validate vector dimensions match
+        if (count($v1) !== count($v2)) {
+            throw new \InvalidArgumentException("Vector dimensions must match");
+        }
+
+        if (count($v1) !== $this->dimension) {
+            throw new \InvalidArgumentException("Vector dimension must match table dimension: {$this->dimension}");
+        }
+
         $statement = $this->mysqli->prepare("SELECT MV_DOT_PRODUCT(?, ?)");
 
         if(!$statement) {
@@ -310,6 +315,11 @@ class VectorTable
      */
     public function upsert(array $vector, ?int $id = null): int
     {
+        // Validate vector dimension
+        if (count($vector) !== $this->dimension) {
+            throw new \InvalidArgumentException("Vector dimension must match table dimension: {$this->dimension}");
+        }
+
         $normalizedVector = $this->normalize($vector);
         $binaryCode = $this->vectorToHex($normalizedVector);
         $escapedTableName = $this->escapeIdentifier($this->getVectorTableName());
@@ -361,6 +371,11 @@ class VectorTable
             }
 
             foreach ($vectorArray as $vector) {
+                // Validate vector dimension
+                if (count($vector) !== $this->dimension) {
+                    throw new \InvalidArgumentException("Vector dimension must match table dimension: {$this->dimension}");
+                }
+
                 $normalizedVector = $this->normalize($vector);
                 $binaryCode = $this->vectorToHex($normalizedVector);
                 $normalizedVectorJson = json_encode($normalizedVector);
@@ -497,6 +512,10 @@ class VectorTable
         // Input validation
         if (empty($vector)) {
             throw new \InvalidArgumentException("Search vector cannot be empty");
+        }
+
+        if (count($vector) !== $this->dimension) {
+            throw new \InvalidArgumentException("Search vector dimension must match table dimension: {$this->dimension}");
         }
 
         if ($n <= 0) {
