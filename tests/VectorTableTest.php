@@ -318,4 +318,28 @@ class VectorTableTest extends BaseVectorTest
         $vectorTable->getConnection()->rollback();
     }
 
+
+    public function testConstructorAllowsMaxVarbinaryBoundDimension() {
+        $dimension = 65535 * 8; // 524,280
+        $tableName = 'constructor_limit_ok_' . uniqid();
+
+        // Should NOT throw; we do not initialize tables here
+        $vt = new \MHz\MysqlVector\VectorTable(self::$mysqli, $tableName, $dimension);
+        $this->assertInstanceOf(\MHz\MysqlVector\VectorTable::class, $vt);
+    }
+
+    public function testConstructorRejectsBeyondVarbinaryBoundDimension() {
+        $dimension = (65535 * 8) + 1; // 524,281
+        $tableName = 'constructor_limit_exceed_' . uniqid();
+
+        try {
+            new \MHz\MysqlVector\VectorTable(self::$mysqli, $tableName, $dimension);
+            $this->fail('Expected InvalidArgumentException for exceeding VARBINARY-backed dimension limit');
+        } catch (\InvalidArgumentException $e) {
+            $msg = $e->getMessage();
+            // Message should reflect the numeric max-dimension constraint
+            $this->assertStringContainsString('Maximum supported dimension', $msg);
+            $this->assertStringContainsString((string) (65535 * 8), $msg);
+        }
+    }
 }

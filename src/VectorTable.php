@@ -37,22 +37,17 @@ class VectorTable
      */
     public function __construct(\mysqli $mysqli, string $name, int $dimension = 384, string $engine = 'InnoDB')
     {
-        // Maximum dimensions limited by InnoDB prefix index limit of 3072 bytes
-        // 3072 bytes * 8 bits/byte = 24,576 dimensions maximum
-        // Using a conservative limit to account for MySQL configuration variations
-        $maxDimensions = 24000;
+        // Maximum dimensions are limited by VARBINARY storage
+        // binary_code uses VARBINARY(ceil(dimension/8)); VARBINARY max length in MySQL is 65,535 bytes
+        // maximum supported dimensions = 65,535 * 8 = 524,280.
+        $maxDimensions = 65535 * 8;
 
         if ($dimension <= 0) {
-            throw new \InvalidArgumentException("Dimension must be a positive integer, got: $dimension");
+            throw new \InvalidArgumentException("Dimension must be a positive integer, got $dimension");
         }
 
         if ($dimension > $maxDimensions) {
-            $maxBytes = ceil($dimension / 8);
-            throw new \InvalidArgumentException(
-                "Dimension $dimension requires $maxBytes bytes for binary indexing, " .
-                "which exceeds MySQL's InnoDB prefix index limit of 3072 bytes. " .
-                "Maximum supported dimensions: $maxDimensions"
-            );
+            throw new \InvalidArgumentException("Maximum supported dimension is $maxDimensions, got $dimension");
         }
 
         $this->mysqli = $mysqli;
