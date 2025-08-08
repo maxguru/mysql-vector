@@ -124,8 +124,7 @@ class VectorTable
                 CREATE TABLE {$ifNotExistsClause} {$escapedVectorTableName} (
                     id INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
                     normalized_vector JSON,
-                    binary_code VARBINARY({$binaryCodeLengthInBytes}),
-                    created TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                    binary_code VARBINARY({$binaryCodeLengthInBytes})
                 ) ENGINE={$engine};
             ";
 

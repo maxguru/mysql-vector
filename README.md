@@ -85,7 +85,6 @@ The table schema includes:
 - `id`: Auto-incrementing primary key
 - `normalized_vector`: JSON column storing the L2-normalized vector
 - `binary_code`: VARBINARY column storing the binary quantized representation for fast filtering
-- `created`: Timestamp of when the vector was inserted
 
 #### Cleanup and Deinitialization
 The library provides comprehensive cleanup capabilities:
