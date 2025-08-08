@@ -497,7 +497,6 @@ class VectorTable
      * @param int $n Maximum number of results to return (default: 10)
      * @return array Array of results, each containing:
      *               - 'id': Vector ID
-     *               - 'normalized_vector': L2-normalized vector
      *               - 'similarity': Cosine similarity [-1, 1]
      * @throws \Exception If database operations fail or invalid input
      */
@@ -524,7 +523,6 @@ class VectorTable
         $sql = "
         SELECT
             candidates.id,
-            candidates.normalized_vector,
             MV_DOT_PRODUCT(candidates.normalized_vector, ?) AS similarity
         FROM (
             SELECT
@@ -546,13 +544,12 @@ class VectorTable
 
         $statement->bind_param('ssii', $normalizedVectorJson, $binaryCode, $n, $n);
         $statement->execute();
-        $statement->bind_result($id, $nv, $sim);
+        $statement->bind_result($id, $sim);
 
         $results = [];
         while ($statement->fetch()) {
             $results[] = [
                 'id' => $id,
-                'normalized_vector' => json_decode($nv, true),
                 'similarity' => $sim
             ];
         }

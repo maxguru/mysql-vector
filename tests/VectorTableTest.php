@@ -272,7 +272,7 @@ class VectorTableTest extends BaseVectorTest
 
         // Let's insert a known vector
         $targetVector = array_fill(0, $this->dimension, 0.5);
-        $vectorTable->upsert($targetVector);
+        $targetId = $vectorTable->upsert($targetVector);
 
         // Now, we search for this vector
         $searchAmount = $this->testVectorAmount * $multiples;
@@ -283,13 +283,9 @@ class VectorTableTest extends BaseVectorTest
         // print time in format 00:00:00.000
         echo sprintf("Search completed in %.2f seconds\n", $time);
 
-        // At least the first result should be our target vector or very close
-        $firstResultVector = $results[0]['normalized_vector'];
+        // Validate that the top search result is the vector we inserted
+        $this->assertEquals($targetId, $results[0]['id'], "The most similar vector should be the target vector's ID");
         $firstResultSimilarity = $results[0]['similarity'];
-
-        // Verify that the result vector matches what normalize() would produce for our target
-        $expectedNormalized = $vectorTable->normalize($targetVector);
-        $this->assertEqualsWithDelta($expectedNormalized, $firstResultVector, 0.00001, "The most similar vector should match the normalized target vector");
 
         // The similarity should be very high since we're searching for the same vector we inserted
         $this->assertGreaterThan(0.99, $firstResultSimilarity, "The similarity should be very high when searching for the same vector");
