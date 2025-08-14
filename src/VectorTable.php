@@ -9,24 +9,6 @@ class VectorTable
     private string $engine;
     private \mysqli $mysqli;
 
-    const SQL_DOT_PRODUCT_FUNCTION = "
-        CREATE FUNCTION MV_DOT_PRODUCT(v1 JSON, v2 JSON)
-        RETURNS FLOAT
-        DETERMINISTIC
-        READS SQL DATA
-        BEGIN
-            DECLARE sim FLOAT DEFAULT 0;
-            DECLARE i INT DEFAULT 0;
-            DECLARE len INT DEFAULT JSON_LENGTH(v1);
-
-            WHILE i < len DO
-                SET sim = sim + (JSON_EXTRACT(v1, CONCAT('$[', i, ']')) * JSON_EXTRACT(v2, CONCAT('$[', i, ']')));
-                SET i = i + 1;
-            END WHILE;
-
-            RETURN sim;
-        END";
-
     /**
      * Instantiate a new VectorTable object.
      * @param \mysqli $mysqli The mysqli connection
@@ -131,40 +113,68 @@ class VectorTable
     }
 
     /**
-     * Initialize global MySQL functions (should be called once per database)
-     * @param \mysqli $mysqli Database connection
+     * Create the tables required for storing vectors.
+     * Fails if already initialized (table exists)
      * @return void
-     * @throws \Exception If the functions could not be created
-     */
-    public static function initializeFunctions(\mysqli $mysqli): void
-    {
-        // Execute all DROP and CREATE statements in a single multi-statement query
-        $queries = "
-            DROP FUNCTION IF EXISTS MV_DOT_PRODUCT;
-            " . self::SQL_DOT_PRODUCT_FUNCTION . ";
-        ";
-
-        if (!$mysqli->multi_query($queries)) {
-            throw new \Exception("Failed to initialize functions: " . $mysqli->error);
-        }
-
-        // Clear all results from multi-query
-        do { if ($result = $mysqli->store_result()) { $result->free(); } } while ($mysqli->next_result());
-    }
-
-    /**
-     * Create the tables and functions required for storing vectors
-     * Fails if already initialized
-     * @return void
-     * @throws \Exception If the tables or functions could not be created
+     * @throws \Exception If the tables could not be created
      */
     public function initialize(): void
     {
-        // Initialize functions first (global)
-        self::initializeFunctions($this->mysqli);
-
-        // Then initialize tables (instance-specific)
+        // Initialize tables (instance-specific)
         $this->initializeTables();
+    }
+
+    /**
+     * Compute the dot product between two equal-length numeric arrays using
+     * a manual loop with x32 unrolling for performance on large vectors.
+     */
+    private function dot(array $a, array $b): float
+    {
+        $n = $this->dimension; // both arrays are validated to match this dimension
+        $sum = 0.0;
+        $i = 0;
+        $limit = $n - ($n % 32);
+
+        for (; $i < $limit; $i += 32) {
+            $sum += ($a[$i] * $b[$i])
+                  + ($a[$i + 1] * $b[$i + 1])
+                  + ($a[$i + 2] * $b[$i + 2])
+                  + ($a[$i + 3] * $b[$i + 3])
+                  + ($a[$i + 4] * $b[$i + 4])
+                  + ($a[$i + 5] * $b[$i + 5])
+                  + ($a[$i + 6] * $b[$i + 6])
+                  + ($a[$i + 7] * $b[$i + 7])
+                  + ($a[$i + 8] * $b[$i + 8])
+                  + ($a[$i + 9] * $b[$i + 9])
+                  + ($a[$i + 10] * $b[$i + 10])
+                  + ($a[$i + 11] * $b[$i + 11])
+                  + ($a[$i + 12] * $b[$i + 12])
+                  + ($a[$i + 13] * $b[$i + 13])
+                  + ($a[$i + 14] * $b[$i + 14])
+                  + ($a[$i + 15] * $b[$i + 15])
+                  + ($a[$i + 16] * $b[$i + 16])
+                  + ($a[$i + 17] * $b[$i + 17])
+                  + ($a[$i + 18] * $b[$i + 18])
+                  + ($a[$i + 19] * $b[$i + 19])
+                  + ($a[$i + 20] * $b[$i + 20])
+                  + ($a[$i + 21] * $b[$i + 21])
+                  + ($a[$i + 22] * $b[$i + 22])
+                  + ($a[$i + 23] * $b[$i + 23])
+                  + ($a[$i + 24] * $b[$i + 24])
+                  + ($a[$i + 25] * $b[$i + 25])
+                  + ($a[$i + 26] * $b[$i + 26])
+                  + ($a[$i + 27] * $b[$i + 27])
+                  + ($a[$i + 28] * $b[$i + 28])
+                  + ($a[$i + 29] * $b[$i + 29])
+                  + ($a[$i + 30] * $b[$i + 30])
+                  + ($a[$i + 31] * $b[$i + 31]);
+        }
+
+        for (; $i < $n; $i++) {
+            $sum += $a[$i] * $b[$i];
+        }
+
+        return $sum;
     }
 
     /**
@@ -188,36 +198,14 @@ class VectorTable
     }
 
     /**
-     * Clean up global MySQL functions
-     * @param \mysqli $mysqli Database connection
-     * @return void
-     * @throws \Exception If cleanup fails
-     */
-    public static function deinitializeFunctions(\mysqli $mysqli): void
-    {
-        // Drop all functions in single multi-query
-        $queries = "DROP FUNCTION IF EXISTS MV_DOT_PRODUCT;";
-
-        if (!$mysqli->multi_query($queries)) {
-            throw new \Exception("Failed to drop functions: " . $mysqli->error);
-        }
-
-        // Clear all results from multi-query
-        do { if ($result = $mysqli->store_result()) { $result->free(); } } while ($mysqli->next_result());
-    }
-
-    /**
-     * Complete cleanup of tables and functions
+     * Complete cleanup of tables.
      * @return void
      * @throws \Exception If cleanup fails
      */
     public function deinitialize(): void
     {
-        // Clean up tables first
+        // Clean up tables
         $this->deinitializeTables();
-
-        // Then clean up functions (global)
-        self::deinitializeFunctions($this->mysqli);
     }
 
     /**
@@ -242,23 +230,11 @@ class VectorTable
             throw new \InvalidArgumentException("Vector dimension must match table dimension: {$this->dimension}");
         }
 
-        $statement = $this->mysqli->prepare("SELECT MV_DOT_PRODUCT(?, ?)");
+        // Normalize both vectors before computing dot product (equals cosine similarity)
+        $normalizedV1 = $this->normalize($v1);
+        $normalizedV2 = $this->normalize($v2);
 
-        if(!$statement) {
-            throw new \Exception("Failed to prepare dot product query: " . $this->mysqli->error);
-        }
-
-        // Normalize both vectors before computing dot product (which equals cosine similarity)
-        $normalizedV1 = json_encode($this->normalize($v1));
-        $normalizedV2 = json_encode($this->normalize($v2));
-
-        $statement->bind_param('ss', $normalizedV1, $normalizedV2);
-        $statement->execute();
-        $statement->bind_result($similarity);
-        $statement->fetch();
-        $statement->close();
-
-        return $similarity;
+        return $this->dot($normalizedV1, $normalizedV2);
     }
 
     /**
@@ -479,45 +455,53 @@ class VectorTable
         }
 
         $escapedTableName = $this->escapeIdentifier($this->getVectorTableName());
-        $normalizedVector = $this->normalize($vector);
-        $binaryCode = $this->vectorToHex($normalizedVector);
-        $normalizedVectorJson = json_encode($normalizedVector);
+        $queryVector = $this->normalize($vector);
+        $binaryCode = $this->vectorToHex($queryVector);
 
+        // Stage 1: fetch top-N candidates by Hamming distance with their normalized vectors
         $sql = "
-        SELECT
-            candidates.id,
-            MV_DOT_PRODUCT(candidates.normalized_vector, ?) AS similarity
-        FROM (
-            SELECT
-                id,
-                normalized_vector,
-                BIT_COUNT(binary_code ^ UNHEX(?)) AS hamming_distance
-            FROM {$escapedTableName}
-            ORDER BY hamming_distance
-            LIMIT ?
-        ) AS candidates
-        ORDER BY similarity DESC
+        SELECT id, normalized_vector
+        FROM {$escapedTableName}
+        ORDER BY BIT_COUNT(binary_code ^ UNHEX(?))
         LIMIT ?";
 
         $statement = $this->mysqli->prepare($sql);
-
         if (!$statement) {
             throw new \Exception("Failed to prepare search query: " . $this->mysqli->error);
         }
 
-        $statement->bind_param('ssii', $normalizedVectorJson, $binaryCode, $n, $n);
+        $statement->bind_param('si', $binaryCode, $n);
         $statement->execute();
-        $statement->bind_result($id, $sim);
+        $statement->bind_result($id, $normalizedVectorJson);
 
-        $results = [];
+        $candidates = [];
         while ($statement->fetch()) {
-            $results[] = [
+            $candidates[] = [
                 'id' => $id,
+                'normalized_vector' => json_decode($normalizedVectorJson, true)
+            ];
+        }
+        $statement->close();
+
+        // Stage 2: PHP-side re-ranking using dot product
+        $results = [];
+        foreach ($candidates as $row) {
+            $sim = $this->dot($row['normalized_vector'], $queryVector);
+            $results[] = [
+                'id' => $row['id'],
                 'similarity' => $sim
             ];
         }
 
-        $statement->close();
+        // Sort by similarity desc and return top N
+        usort($results, static function($a, $b) {
+            if ($a['similarity'] === $b['similarity']) return 0;
+            return ($a['similarity'] < $b['similarity']) ? 1 : -1;
+        });
+
+        if (count($results) > $n) {
+            $results = array_slice($results, 0, $n);
+        }
 
         return $results;
     }

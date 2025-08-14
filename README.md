@@ -1,7 +1,7 @@
 # A Library for MySQL Vector Operations
 
 ## Overview
-The `VectorTable` class is a PHP implementation designed to facilitate the storage and search of high-dimensional vectors in a MySQL database. This class stores normalized and quantized vectors in JSON and binary formats and uses a custom MySQL function for cosine similarity calculations.
+The `VectorTable` class is a PHP implementation designed to facilitate the storage and search of high-dimensional vectors in a MySQL database. This class stores normalized and quantized vectors in JSON and binary formats and uses a two-stage search algorithm for efficient similarity search.
 
 ### Computational Efficiency
 The library stores only **normalized vectors** in the database, which provides computational efficiency, eliminating normalization overhead (cosine similarity is simply a dot product of normalized vectors).
@@ -26,7 +26,7 @@ Vectors | Time (seconds)
 The Hamming distance filtering implementation uses `VARBINARY` storage for binary codes. The current implementation supports vector dimensions up to 524,280 (limited by MySQL's maximum `VARBINARY` length; one bit per vector dimension packed into bytes).
 
 ## Features
-- Management of database tables and functions.
+- Management of database tables.
 - Support for multiple vector tables within a single database.
 - Vector operations: insertion, deletion, retrieval, and search by cosine similarity.
 - Support for high-dimensional vectors (up to 524,280 dimensions).
@@ -34,7 +34,7 @@ The Hamming distance filtering implementation uses `VARBINARY` storage for binar
 
 ## Requirements
 - PHP 8.0 or higher.
-- MySQL 5.7 or higher with support for JSON data types and stored functions.
+- MySQL 5.7 or higher with support for JSON data types.
 - A MySQLi extension for PHP.
 
 ## Installation
@@ -69,17 +69,14 @@ The library provides flexible initialization options for different use cases:
 > - Ensure you use a unique base table name or clean up with deinitializeTables() before re-initializing.
 
 #### Complete Initialization
-The `initialize` method creates both the vector table and the `MV_DOT_PRODUCT` function:
+The `initialize` method creates the vector table:
 ```php
 $vectorTable->initialize();
 ```
 
 #### Granular Initialization
-For more control, you can initialize tables and functions separately:
+For more control, you can initialize tables separately:
 ```php
-// Initialize global MySQL functions (call once per database)
-VectorTable::initializeFunctions($mysqli);
-
 // Initialize tables for multiple vector tables
 $vectorTable1->initializeTables();
 $vectorTable2->initializeTables();
@@ -96,10 +93,7 @@ The library provides comprehensive cleanup capabilities:
 // Clean up tables for this VectorTable instance
 $vectorTable->deinitializeTables();
 
-// Clean up global MySQL functions
-VectorTable::deinitializeFunctions($mysqli);
-
-// Complete cleanup (tables + functions)
+// Complete cleanup (tables)
 $vectorTable->deinitialize();
 ```
 

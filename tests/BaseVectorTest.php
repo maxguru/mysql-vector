@@ -67,8 +67,7 @@ abstract class BaseVectorTest extends TestCase
             throw new \Exception("Database connection failed: " . self::$mysqli->connect_error);
         }
 
-        // Initialize global MySQL functions once for all tests
-        VectorTable::initializeFunctions(self::$mysqli);
+        // No stored routine initialization required
     }
 
     /**
@@ -134,14 +133,6 @@ abstract class BaseVectorTest extends TestCase
     public static function tearDownAfterClass(): void
     {
         if (self::$mysqli && !self::$mysqli->connect_error) {
-            // Clean up global MySQL functions
-            try {
-                VectorTable::deinitializeFunctions(self::$mysqli);
-            } catch (\Exception $e) {
-                // Log error but continue cleanup
-                error_log("Failed to cleanup MySQL functions: " . $e->getMessage());
-            }
-
             self::$mysqli->close();
         }
         self::$mysqli = null;
