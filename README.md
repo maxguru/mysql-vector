@@ -23,13 +23,13 @@ Vectors | Time (seconds)
 1000000 | 0.48
 
 ### High Dimension Support
-The Hamming distance filtering implementation uses `VARBINARY` storage for binary codes, supporting up to 24,000 dimensions (limited by MySQL's InnoDB prefix index limit).
+The Hamming distance filtering implementation uses `VARBINARY` storage for binary codes. The current implementation supports vector dimensions up to 524,280 (limited by MySQL's maximum `VARBINARY` length; one bit per vector dimension packed into bytes).
 
 ## Features
 - Management of database tables and functions.
 - Support for multiple vector tables within a single database.
-- Vector operations: insertion, deletion, and search by cosine similarity.
-- Support for high-dimensional vectors (up to 24,000 dimensions).
+- Vector operations: insertion, deletion, retrieval, and search by cosine similarity.
+- Support for high-dimensional vectors (up to 524,280 dimensions).
 - Batch insert operations for efficient bulk vector storage.
 
 ## Requirements
@@ -134,7 +134,6 @@ $similarVectors = $vectorTable->search($vector, $topN);
 
 // Results include:
 // - 'id': Vector ID
-// - 'normalized_vector': The stored normalized vector
 // - 'similarity': Cosine similarity score
 foreach ($similarVectors as $result) {
     echo "Vector ID: {$result['id']}, Similarity: {$result['similarity']}\n";
