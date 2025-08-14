@@ -109,34 +109,25 @@ class VectorTable
      */
     public function initializeTables(): void
     {
-        $this->mysqli->begin_transaction();
+        // Build all SQL statements for single multi-query execution with proper escaping
+        $binaryCodeLengthInBytes = ceil($this->dimension / 8);
+        $escapedVectorTableName = $this->escapeIdentifier($this->getVectorTableName());
+        $engine = $this->escapeIdentifier($this->engine);
 
-        try {
-            // Build all SQL statements for single multi-query execution with proper escaping
-            $binaryCodeLengthInBytes = ceil($this->dimension / 8);
-            $escapedVectorTableName = $this->escapeIdentifier($this->getVectorTableName());
-            $engine = $this->escapeIdentifier($this->engine);
+        $queries = "
+            CREATE TABLE {$escapedVectorTableName} (
+                id INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+                normalized_vector JSON,
+                binary_code VARBINARY({$binaryCodeLengthInBytes})
+            ) ENGINE={$engine};
+        ";
 
-            $queries = "
-                CREATE TABLE {$escapedVectorTableName} (
-                    id INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
-                    normalized_vector JSON,
-                    binary_code VARBINARY({$binaryCodeLengthInBytes})
-                ) ENGINE={$engine};
-            ";
-
-            if (!$this->mysqli->multi_query($queries)) {
-                throw new \Exception("Failed to initialize tables: " . $this->mysqli->error);
-            }
-
-            // Clear all results from multi-query
-            do { if ($result = $this->mysqli->store_result()) { $result->free(); } } while ($this->mysqli->next_result());
-
-            $this->mysqli->commit();
-        } catch (\Exception $e) {
-            $this->mysqli->rollback();
-            throw $e;
+        if (!$this->mysqli->multi_query($queries)) {
+            throw new \Exception("Failed to initialize tables: " . $this->mysqli->error);
         }
+
+        // Clear all results from multi-query
+        do { if ($result = $this->mysqli->store_result()) { $result->free(); } } while ($this->mysqli->next_result());
     }
 
     /**
@@ -147,27 +138,18 @@ class VectorTable
      */
     public static function initializeFunctions(\mysqli $mysqli): void
     {
-        $mysqli->begin_transaction();
+        // Execute all DROP and CREATE statements in a single multi-statement query
+        $queries = "
+            DROP FUNCTION IF EXISTS MV_DOT_PRODUCT;
+            " . self::SQL_DOT_PRODUCT_FUNCTION . ";
+        ";
 
-        try {
-            // Execute all DROP and CREATE statements in a single multi-statement query
-            $queries = "
-                DROP FUNCTION IF EXISTS MV_DOT_PRODUCT;
-                " . self::SQL_DOT_PRODUCT_FUNCTION . ";
-            ";
-
-            if (!$mysqli->multi_query($queries)) {
-                throw new \Exception("Failed to initialize functions: " . $mysqli->error);
-            }
-
-            // Clear all results from multi-query
-            do { if ($result = $mysqli->store_result()) { $result->free(); } } while ($mysqli->next_result());
-
-            $mysqli->commit();
-        } catch (\Exception $e) {
-            $mysqli->rollback();
-            throw $e;
+        if (!$mysqli->multi_query($queries)) {
+            throw new \Exception("Failed to initialize functions: " . $mysqli->error);
         }
+
+        // Clear all results from multi-query
+        do { if ($result = $mysqli->store_result()) { $result->free(); } } while ($mysqli->next_result());
     }
 
     /**
@@ -192,26 +174,17 @@ class VectorTable
      */
     public function deinitializeTables(): void
     {
-        $this->mysqli->begin_transaction();
+        // Drop table with proper escaping
+        $escapedVectorTableName = $this->escapeIdentifier($this->getVectorTableName());
 
-        try {
-            // Drop table with proper escaping
-            $escapedVectorTableName = $this->escapeIdentifier($this->getVectorTableName());
+        $queries = "DROP TABLE IF EXISTS {$escapedVectorTableName};";
 
-            $queries = "DROP TABLE IF EXISTS {$escapedVectorTableName};";
-
-            if (!$this->mysqli->multi_query($queries)) {
-                throw new \Exception("Failed to drop tables: " . $this->mysqli->error);
-            }
-
-            // Clear all results from multi-query
-            do { if ($result = $this->mysqli->store_result()) { $result->free(); } } while ($this->mysqli->next_result());
-
-            $this->mysqli->commit();
-        } catch (\Exception $e) {
-            $this->mysqli->rollback();
-            throw $e;
+        if (!$this->mysqli->multi_query($queries)) {
+            throw new \Exception("Failed to drop tables: " . $this->mysqli->error);
         }
+
+        // Clear all results from multi-query
+        do { if ($result = $this->mysqli->store_result()) { $result->free(); } } while ($this->mysqli->next_result());
     }
 
     /**
@@ -222,24 +195,15 @@ class VectorTable
      */
     public static function deinitializeFunctions(\mysqli $mysqli): void
     {
-        $mysqli->begin_transaction();
+        // Drop all functions in single multi-query
+        $queries = "DROP FUNCTION IF EXISTS MV_DOT_PRODUCT;";
 
-        try {
-            // Drop all functions in single multi-query
-            $queries = "DROP FUNCTION IF EXISTS MV_DOT_PRODUCT;";
-
-            if (!$mysqli->multi_query($queries)) {
-                throw new \Exception("Failed to drop functions: " . $mysqli->error);
-            }
-
-            // Clear all results from multi-query
-            do { if ($result = $mysqli->store_result()) { $result->free(); } } while ($mysqli->next_result());
-
-            $mysqli->commit();
-        } catch (\Exception $e) {
-            $mysqli->rollback();
-            throw $e;
+        if (!$mysqli->multi_query($queries)) {
+            throw new \Exception("Failed to drop functions: " . $mysqli->error);
         }
+
+        // Clear all results from multi-query
+        do { if ($result = $mysqli->store_result()) { $result->free(); } } while ($mysqli->next_result());
     }
 
     /**
