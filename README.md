@@ -64,6 +64,10 @@ $vectorTable = new VectorTable($mysqli, $tableName, $dimension, $engine);
 ### Setting Up the Vector Table in MySQL
 The library provides flexible initialization options for different use cases:
 
+> Important
+> - Initialization methods will throw an exception if the target tables already exists.
+> - Ensure you use a unique base table name or clean up with deinitializeTables() before re-initializing.
+
 #### Complete Initialization
 The `initialize` method creates both the vector table and the `MV_DOT_PRODUCT` function:
 ```php

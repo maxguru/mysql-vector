@@ -102,12 +102,12 @@ class VectorTable
     }
 
     /**
-     * Initialize only the tables for this VectorTable instance
-     * @param bool $ifNotExists Whether to use IF NOT EXISTS in the CREATE TABLE statements
+     * Initialize the tables for this VectorTable instance
+     * Fails if tables have already been created
      * @return void
-     * @throws \Exception If the tables could not be created
+     * @throws \Exception If the tables could not be created (e.g., table already exists)
      */
-    public function initializeTables(bool $ifNotExists = true): void
+    public function initializeTables(): void
     {
         $this->mysqli->begin_transaction();
 
@@ -117,11 +117,8 @@ class VectorTable
             $escapedVectorTableName = $this->escapeIdentifier($this->getVectorTableName());
             $engine = $this->escapeIdentifier($this->engine);
 
-            $ifNotExistsClause = $ifNotExists ? 'IF NOT EXISTS' : '';
-
-            // Execute all statements in single multi-query
             $queries = "
-                CREATE TABLE {$ifNotExistsClause} {$escapedVectorTableName} (
+                CREATE TABLE {$escapedVectorTableName} (
                     id INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
                     normalized_vector JSON,
                     binary_code VARBINARY({$binaryCodeLengthInBytes})
@@ -175,17 +172,17 @@ class VectorTable
 
     /**
      * Create the tables and functions required for storing vectors
-     * @param bool $ifNotExists Whether to use IF NOT EXISTS in the CREATE TABLE statements
+     * Fails if already initialized
      * @return void
      * @throws \Exception If the tables or functions could not be created
      */
-    public function initialize(bool $ifNotExists = true): void
+    public function initialize(): void
     {
         // Initialize functions first (global)
         self::initializeFunctions($this->mysqli);
 
         // Then initialize tables (instance-specific)
-        $this->initializeTables($ifNotExists);
+        $this->initializeTables();
     }
 
     /**
