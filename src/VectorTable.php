@@ -388,7 +388,9 @@ class VectorTable
             $this->mysqli->rollback();
             throw $e;
         } finally {
-            $statement->close();
+            if (isset($statement) && $statement) {
+                $statement->close();
+            }
         }
 
         return $ids;
