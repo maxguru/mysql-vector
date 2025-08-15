@@ -1,7 +1,7 @@
 # A Library for MySQL Vector Operations
 
 ## Overview
-The `VectorTable` class is a PHP implementation designed to facilitate the storage and search of high-dimensional vectors in a MySQL database. This class stores normalized and quantized vectors in JSON and binary formats and uses a two-stage search algorithm for efficient similarity search.
+The `VectorTable` class is a PHP implementation designed to facilitate the storage and search of high-dimensional vectors in a MySQL database. This class stores normalized vectors as binary float arrays (VARBINARY) and quantized binary codes (VARBINARY), and uses a two-stage search algorithm for efficient similarity search.
 
 ### Computational Efficiency
 The library stores only **normalized vectors** in the database, which provides computational efficiency, eliminating normalization overhead (cosine similarity is simply a dot product of normalized vectors).
@@ -22,19 +22,24 @@ Vectors | Time (seconds)
 100000  | 0.06
 1000000 | 0.48
 
+## Storage Efficiency
+Normalized vectors are stored as 32-bit IEEE-754 floats (float32) in little-endian order inside the `normalized_vector` VARBINARY column. Round-trip encoding/decoding to and from binary can introduce very small precision differences compared to 64-bit doubles; typical tolerances are around 1e-6 when comparing vectors after storage/retrieval. This precision is sufficient for cosine-similarity/dot-product ranking in typical embedding-based applications and allows significantly smaller storage and better performance than 64-bit doubles. Storing 4 bytes per dimension (instead of 8 bytes) allows 2x higher limit on dimensions and halves storage and network costs, which improves performance for insert, read, and re-ranking, while still maintaining sufficient accuracy for similarity search purposes.
+
+Binary quantized codes are stored in the `binary_code` VARBINARY column. Storage requirements are 1 bit per dimension, so a 384-dimensional vector requires 48 bytes.
+
 ### High Dimension Support
-The Hamming distance filtering implementation uses `VARBINARY` storage for binary codes. The current implementation supports vector dimensions up to 524,280 (limited by MySQL's maximum `VARBINARY` length; one bit per vector dimension packed into bytes).
+Normalized vector storage uses VARBINARY(4 * dimension). MySQL's maximum VARBINARY length is 65,535 bytes, so the maximum supported dimension for float32 storage is floor(65,535 / 4) = 16,383. Binary quantized codes use VARBINARY(ceil(dimension/8)) for Stage 1 filtering. While this could theoretically support up to 524,280 bits, the effective limit is governed by the normalized vector storage (16,383 dimensions).
 
 ## Features
 - Management of database tables.
 - Support for multiple vector tables within a single database.
 - Vector operations: insertion, deletion, retrieval, and search by cosine similarity.
-- Support for high-dimensional vectors (up to 524,280 dimensions).
+- Support for high-dimensional vectors (up to 16,383 dimensions for normalized vector storage).
 - Batch insert operations for efficient bulk vector storage.
 
 ## Requirements
 - PHP 8.0 or higher.
-- MySQL 5.7 or higher with support for JSON data types.
+- MySQL 5.7 or higher.
 - A MySQLi extension for PHP.
 
 ## Installation
@@ -84,7 +89,7 @@ $vectorTable2->initializeTables();
 
 The table schema includes:
 - `id`: Auto-incrementing primary key
-- `normalized_vector`: JSON column storing the L2-normalized vector
+- `normalized_vector`: VARBINARY(4 * dimension) storing the L2-normalized vector in little-endian float32 format
 - `binary_code`: VARBINARY column storing the binary quantized representation for fast filtering
 
 #### Cleanup and Deinitialization

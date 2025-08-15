@@ -80,7 +80,8 @@ class VectorTableTest extends BaseVectorTest
         // Verify that the stored vector matches what the normalize() method would produce
         $expectedNormalized = $vectorTable->normalize($newVec);
         $actualStored = $r[0]['normalized_vector'];
-        $this->assertEqualsWithDelta($expectedNormalized, $actualStored, 0.00001, "Stored vector should match the result of normalize() method");
+        // Stored vectors are encoded as float32; allow slightly larger tolerance
+        $this->assertEqualsWithDelta($expectedNormalized, $actualStored, 1e-6, "Stored vector should match normalized() within float32 precision");
 
         $vectorTable->getConnection()->rollback();
     }
@@ -121,7 +122,8 @@ class VectorTableTest extends BaseVectorTest
             // Verify that each stored vector matches what the normalize() method would produce
             $expectedNormalized = $vectorTable->normalize($vecs[$i]);
             $actualStored = $result['normalized_vector'];
-            $this->assertEqualsWithDelta($expectedNormalized, $actualStored, 0.00001, "Each stored vector should match the result of normalize() method");
+            // Stored vectors are encoded as float32; allow slightly larger tolerance
+            $this->assertEqualsWithDelta($expectedNormalized, $actualStored, 1e-6, "Each stored vector should match normalized() within float32 precision");
             $i++;
         }
 
@@ -142,6 +144,28 @@ class VectorTableTest extends BaseVectorTest
 
         $hex = $vectorTable->vectorToHex([0.5, 0.5, 0.5, 0.5, 1,0,0,0,0,0,0,0,0,0,0,1]);
         $this->assertEqualsIgnoringCase('1f80', $hex);
+    }
+
+    public function testVectorToBlobAndBackRoundTrip()
+    {
+        $dimension = 16;
+        // Directly instantiate VectorTable; no DB table creation needed for pure PHP methods
+        $vectorTable = new \MHz\MysqlVector\VectorTable(self::$mysqli, 'blob_roundtrip', $dimension);
+
+        // generate a vector with a range of magnitudes and signs
+        $vec = [];
+        for ($i = 0; $i < $dimension; $i++) {
+            $vec[$i] = ($i % 2 === 0 ? 1 : -1) * ($i + 0.5) / $dimension; // deterministic
+        }
+
+        // Normalize to match library behavior on storage
+        $norm = $vectorTable->normalize($vec);
+
+        $blob = $vectorTable->vectorToBlob($norm);
+        $decoded = $vectorTable->blobToVector($blob);
+
+        // Float32 tolerance: allow small delta compared to double
+        $this->assertEqualsWithDelta($norm, $decoded, 1e-6, 'Decoded vector should match original within float32 precision');
     }
 
     /**
@@ -314,9 +338,8 @@ class VectorTableTest extends BaseVectorTest
         $vectorTable->getConnection()->rollback();
     }
 
-
     public function testConstructorAllowsMaxVarbinaryBoundDimension() {
-        $dimension = 65535 * 8; // 524,280
+        $dimension = \MHz\MysqlVector\VectorTable::MAX_DIMENSIONS; // VARBINARY(4*dim) limit
         $tableName = 'constructor_limit_ok_' . uniqid();
 
         // Should NOT throw; we do not initialize tables here
@@ -325,7 +348,7 @@ class VectorTableTest extends BaseVectorTest
     }
 
     public function testConstructorRejectsBeyondVarbinaryBoundDimension() {
-        $dimension = (65535 * 8) + 1; // 524,281
+        $dimension = \MHz\MysqlVector\VectorTable::MAX_DIMENSIONS + 1; // one above the max
         $tableName = 'constructor_limit_exceed_' . uniqid();
 
         try {
@@ -335,7 +358,7 @@ class VectorTableTest extends BaseVectorTest
             $msg = $e->getMessage();
             // Message should reflect the numeric max-dimension constraint
             $this->assertStringContainsString('Maximum supported dimension', $msg);
-            $this->assertStringContainsString((string) (65535 * 8), $msg);
+            $this->assertStringContainsString((string) \MHz\MysqlVector\VectorTable::MAX_DIMENSIONS, $msg);
         }
     }
 }

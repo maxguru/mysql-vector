@@ -9,6 +9,11 @@ class VectorTable
     private string $engine;
     private \mysqli $mysqli;
 
+    // Maximum supported vector dimensions, currently limited by VARBINARY storage
+    // `normalized_vector` column uses VARBINARY(4 * dimension); VARBINARY max length in MySQL is 65,535 bytes
+    // maximum supported dimensions for float32 storage = floor(65535 bytes / 4 bytes per float32) = 16383
+    public const MAX_DIMENSIONS = 16383;
+
     /**
      * Instantiate a new VectorTable object.
      * @param \mysqli $mysqli The mysqli connection
@@ -19,17 +24,12 @@ class VectorTable
      */
     public function __construct(\mysqli $mysqli, string $name, int $dimension = 384, string $engine = 'InnoDB')
     {
-        // Maximum dimensions are limited by VARBINARY storage
-        // binary_code uses VARBINARY(ceil(dimension/8)); VARBINARY max length in MySQL is 65,535 bytes
-        // maximum supported dimensions = 65,535 * 8 = 524,280.
-        $maxDimensions = 65535 * 8;
-
         if ($dimension <= 0) {
             throw new \InvalidArgumentException("Dimension must be a positive integer, got $dimension");
         }
 
-        if ($dimension > $maxDimensions) {
-            throw new \InvalidArgumentException("Maximum supported dimension is $maxDimensions, got $dimension");
+        if ($dimension > self::MAX_DIMENSIONS) {
+            throw new \InvalidArgumentException("Maximum supported dimension is " . self::MAX_DIMENSIONS . ", got $dimension");
         }
 
         $this->mysqli = $mysqli;
@@ -84,6 +84,27 @@ class VectorTable
     }
 
     /**
+     * Encode a PHP float vector to a little-endian float32 binary blob.
+     * Uses pack('g', ...) to enforce LE regardless of platform endianness.
+     */
+    public function vectorToBlob(array $vector): string {
+        $bin = '';
+        foreach ($vector as $v) {
+            $bin .= pack('g', (float)$v);
+        }
+        return $bin;
+    }
+
+    /**
+     * Decode a little-endian float32 binary blob to a PHP float array.
+     * Uses unpack('g*', ...) for single-pass decoding.
+     */
+    public function blobToVector(string $blob): array {
+        // array_values to reindex from 0
+        return array_values(unpack('g*', $blob));
+    }
+
+    /**
      * Initialize the tables for this VectorTable instance
      * Fails if tables have already been created
      * @return void
@@ -96,10 +117,12 @@ class VectorTable
         $escapedVectorTableName = $this->escapeIdentifier($this->getVectorTableName());
         $engine = $this->escapeIdentifier($this->engine);
 
+        $normalizedVectorLengthInBytes = 4 * $this->dimension; // float32 per component
+
         $queries = "
             CREATE TABLE {$escapedVectorTableName} (
                 id INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
-                normalized_vector JSON,
+                normalized_vector VARBINARY({$normalizedVectorLengthInBytes}),
                 binary_code VARBINARY({$binaryCodeLengthInBytes})
             ) ENGINE={$engine};
         ";
@@ -264,12 +287,12 @@ class VectorTable
             throw new \Exception($this->mysqli->error);
         }
 
-        $normalizedVectorJson = json_encode($normalizedVector);
+        $normalizedVectorBlob = $this->vectorToBlob($normalizedVector);
 
         if(empty($id)) {
-            $statement->bind_param('ss', $normalizedVectorJson, $binaryCode);
+            $statement->bind_param('ss', $normalizedVectorBlob, $binaryCode);
         } else {
-            $statement->bind_param('ssi', $normalizedVectorJson, $binaryCode, $id);
+            $statement->bind_param('ssi', $normalizedVectorBlob, $binaryCode, $id);
         }
 
         $success = $statement->execute();
@@ -309,9 +332,9 @@ class VectorTable
 
                 $normalizedVector = $this->normalize($vector);
                 $binaryCode = $this->vectorToHex($normalizedVector);
-                $normalizedVectorJson = json_encode($normalizedVector);
+                $normalizedVectorBlob = $this->vectorToBlob($normalizedVector);
 
-                $statement->bind_param('ss', $normalizedVectorJson, $binaryCode);
+                $statement->bind_param('ss', $normalizedVectorBlob, $binaryCode);
 
                 if (!$statement->execute()) {
                     throw new \Exception("Execute failed: " . $statement->error);
@@ -354,13 +377,13 @@ class VectorTable
 
         call_user_func_array([$statement, 'bind_param'], array_merge([$types], $refs));
         $statement->execute();
-        $statement->bind_result($vectorId, $normalizedVector, $binaryCode);
+        $statement->bind_result($vectorId, $normalizedVectorBlob, $binaryCode);
 
         $result = [];
         while ($statement->fetch()) {
             $result[] = [
                 'id' => $vectorId,
-                'normalized_vector' => json_decode($normalizedVector, true),
+                'normalized_vector' => $this->blobToVector($normalizedVectorBlob),
                 'binary_code' => $binaryCode
             ];
         }
@@ -380,13 +403,13 @@ class VectorTable
         }
 
         $statement->execute();
-        $statement->bind_result($vectorId, $normalizedVector, $binaryCode);
+        $statement->bind_result($vectorId, $normalizedVectorBlob, $binaryCode);
 
         $result = [];
         while ($statement->fetch()) {
             $result[] = [
                 'id' => $vectorId,
-                'normalized_vector' => json_decode($normalizedVector, true),
+                'normalized_vector' => $this->blobToVector($normalizedVectorBlob),
                 'binary_code' => $binaryCode
             ];
         }
@@ -472,13 +495,13 @@ class VectorTable
 
         $statement->bind_param('si', $binaryCode, $n);
         $statement->execute();
-        $statement->bind_result($id, $normalizedVectorJson);
+        $statement->bind_result($id, $normalizedVectorBlob);
 
         $candidates = [];
         while ($statement->fetch()) {
             $candidates[] = [
                 'id' => $id,
-                'normalized_vector' => json_decode($normalizedVectorJson, true)
+                'normalized_vector' => $this->blobToVector($normalizedVectorBlob)
             ];
         }
         $statement->close();
