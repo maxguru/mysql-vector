@@ -10,36 +10,42 @@ class PerformanceBenchmarkTest extends BaseVectorTest
         echo "=== Memory-Efficient Performance Benchmark ===\n";
         echo "Initial memory: " . $this->getMemoryUsage() . "\n\n";
 
+        // Benchmark dimension
+        $dimension = 384;
+
         // Create VectorTable for performance testing
-        $vectorTable = $this->makeTable('performance_test', 384);
-        self::$mysqli->begin_transaction();
+        $vectorTable = $this->makeTable('performance_test', $dimension);
 
         // Insert a known target vector
-        $targetVector = array_fill(0, 384, 0.5);
+        $targetVector = array_fill(0, $dimension, 0.5);
         $vectorTable->upsert($targetVector);
 
         // Test with progressively larger datasets using chunked insertion
-        $testSizes = [100, 1000, 10000, 100000];
+        $testSizes = [100, 1000, 10000, 100000, 1000000];
         $currentTotal = 1; // We already have the target vector
 
+        $timings = [];
         foreach ($testSizes as $targetSize) {
             $toInsert = $targetSize - $currentTotal;
             if ($toInsert > 0) {
                 echo "Preparing dataset of $targetSize vectors...\n";
-                $this->insertRandomVectorsChunked($vectorTable, $toInsert, 384, 1000);
+                $this->insertRandomVectorsChunked($vectorTable, $toInsert, $dimension);
                 $currentTotal = $targetSize;
             }
 
             // Perform search test
             echo "Searching for 1 vector among $targetSize...\n";
-            $time = microtime(true);
+            $t0 = microtime(true);
             $results = $vectorTable->search($targetVector, 10);
-            $time = microtime(true) - $time;
-            echo sprintf("Search completed in %.4f seconds (Memory: %s)\n", $time, $this->getMemoryUsage());
+            $elapsed = microtime(true) - $t0;
+            echo sprintf("Search completed in %.4f seconds (Memory: %s)\n", $elapsed, $this->getMemoryUsage());
+
+            // Collect timing row for README-format table
+            $timings[] = ['size' => $targetSize, 'seconds' => $elapsed];
 
             // Performance validations with assertions
             $this->assertGreaterThan(0, count($results), "Search should return results for dataset size $targetSize");
-            $this->assertLessThan(5.0, $time, "Search took too long: {$time}s for $targetSize vectors");
+            $this->assertLessThan(5.0, $elapsed, "Search took too long: {$elapsed}s for $targetSize vectors");
             $this->assertGreaterThan(0.0, $results[0]['similarity'], "Top result should have positive similarity");
 
             // Memory efficiency validation
@@ -57,14 +63,20 @@ class PerformanceBenchmarkTest extends BaseVectorTest
             gc_collect_cycles();
         }
 
+        // Print README-format table from collected timings
+        echo "=== README Search Benchmarks ({$dimension}-dimensional vectors) ===\n";
+        echo "Vectors | Time (seconds)\n";
+        echo "--------|---------------\n";
+        foreach ($timings as $row) {
+            printf("%-7d | %.4f\n", $row['size'], $row['seconds']);
+        }
+        echo "\n";
+
         echo "=== Performance test completed ===\n";
         echo "Final memory usage: " . $this->getMemoryUsage() . "\n";
 
         // Final assertion to ensure test is not marked as risky
         $this->assertEquals(1, 1, "Performance benchmark completed successfully");
-
-        // Rollback transaction to clean up test data
-        self::$mysqli->rollback();
     }
 
     /**
