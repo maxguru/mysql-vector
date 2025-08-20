@@ -38,36 +38,6 @@ use MHz\MysqlVector\VectorTable;
  * **Important**: Every entry must have a non-null vector. The test automatically
  * selects diverse texts from different categories to use as test queries.
  *
- * ## Requirements
- * ### 1. MySQL Database
- * - MySQL 8.0+ with JSON support
- * - Database connection configured in your application
- * - Sufficient storage space (approximately 50MB for 100K vectors)
- *
- * ## Test Structure
- *
- * ### 1. Semantic Similarity Search (`testSemanticSimilaritySearch`)
- * - Tests 100 diverse semantic queries across multiple domains
- * - Validates that semantically related content ranks higher than unrelated content
- * - Includes edge cases like nonsensical queries
- * - Measures overall search effectiveness percentage
- *
- * ### 2. Search Performance (`testSearchPerformance`)
- * - Benchmarks search performance across different dataset sizes
- * - Tests with 100, 1K, 10K, and 100K vectors
- * - Measures search time and validates results
- * - Ensures performance remains acceptable as dataset grows
- *
- * ### 3. Search Ranking Quality (`testSearchRankingQuality`)
- * - Tests specific semantic relationships with known expected rankings
- * - Validates that more relevant results appear before less relevant ones
- * - Uses curated test cases with predictable semantic relationships
- *
- * ## Expected Results
- * - **Search Effectiveness**: >80% of semantic queries should return relevant results in top positions
- * - **Performance**: Search times should remain under 1 second for datasets up to 100K vectors
- * - **Ranking Quality**: Semantically closer content should consistently rank higher
- *
  * ## Customizing Test Data
  * To modify test scenarios, edit the `vectors.json` file:
  *
@@ -223,11 +193,6 @@ class SearchEffectivenessTest extends BaseVectorTest
     {
         return array_keys($this->categorizedVectors);
     }
-
-    /**
-     * Clean up after each test
-     */
-
 
     /**
      * Load test vectors into the database for search effectiveness testing
