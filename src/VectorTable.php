@@ -481,7 +481,7 @@ class VectorTable
         $queryVector = $this->normalize($vector);
         $binaryCode = $this->vectorToHex($queryVector);
 
-        // Stage 1: fetch top-N candidates by Hamming distance with their normalized vectors
+        // Fetch top-N candidates by Hamming distance with ONLY the data needed for re-ranking
         $sql = "
         SELECT id, normalized_vector
         FROM {$escapedTableName}
@@ -497,31 +497,27 @@ class VectorTable
         $statement->execute();
         $statement->bind_result($id, $normalizedVectorBlob);
 
-        $candidates = [];
+        $results = [];
         while ($statement->fetch()) {
-            $candidates[] = [
+            $candidateVec = $this->blobToVector($normalizedVectorBlob);
+            $results[] = [
                 'id' => $id,
-                'normalized_vector' => $this->blobToVector($normalizedVectorBlob)
+                'similarity' => $this->dot($candidateVec, $queryVector), // compute similarity for PHP-side re-ranking
             ];
         }
         $statement->close();
 
-        // Stage 2: PHP-side re-ranking using dot product
-        $results = [];
-        foreach ($candidates as $row) {
-            $sim = $this->dot($row['normalized_vector'], $queryVector);
-            $results[] = [
-                'id' => $row['id'],
-                'similarity' => $sim
-            ];
+        if (empty($results)) {
+            return [];
         }
 
-        // Sort by similarity desc and return top N
+        // PHP-side re-ranking
         usort($results, static function($a, $b) {
             if ($a['similarity'] === $b['similarity']) return 0;
             return ($a['similarity'] < $b['similarity']) ? 1 : -1;
         });
 
+        // Keep top-N vectors
         if (count($results) > $n) {
             $results = array_slice($results, 0, $n);
         }
