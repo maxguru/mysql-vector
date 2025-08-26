@@ -515,24 +515,24 @@ class VectorTable
             throw new \Exception($this->mysqli->error);
         }
 
-        $normalizedVectorBlob = $this->vectorToBlob($normalizedVector);
-        $metadataJson = is_null($metadata) ? null : json_encode($metadata);
+        try {
+            $normalizedVectorBlob = $this->vectorToBlob($normalizedVector);
+            $metadataJson = is_null($metadata) ? null : json_encode($metadata);
 
-        if(empty($id)) {
-            $statement->bind_param('sss', $normalizedVectorBlob, $binaryCode, $metadataJson);
-        } else {
-            $statement->bind_param('sssi', $normalizedVectorBlob, $binaryCode, $metadataJson, $id);
+            if(empty($id)) {
+                $statement->bind_param('sss', $normalizedVectorBlob, $binaryCode, $metadataJson);
+            } else {
+                $statement->bind_param('sssi', $normalizedVectorBlob, $binaryCode, $metadataJson, $id);
+            }
+
+            if(!$statement->execute()) {
+                throw new \Exception("Execute failed: " . $statement->error);
+            }
+
+            return $statement->insert_id;
+        } finally {
+            $statement->close();
         }
-
-        $success = $statement->execute();
-        if(!$success) {
-            throw new \Exception($statement->error);
-        }
-
-        $id = $statement->insert_id;
-        $statement->close();
-
-        return $id;
     }
 
     /**
@@ -553,45 +553,45 @@ class VectorTable
                 throw new \Exception("Prepare failed: " . $this->mysqli->error);
             }
 
-            foreach ($vectorData as $item) {
+            try {
+                foreach ($vectorData as $item) {
 
-                if (!is_array($item) || !array_key_exists('vector', $item)) {
-                    throw new \InvalidArgumentException('batchInsert expects each item to have a vector key');
+                    if (!is_array($item) || !array_key_exists('vector', $item)) {
+                        throw new \InvalidArgumentException('batchInsert expects each item to have a vector key');
+                    }
+
+                    $vector = $item['vector'];
+
+                    if (count($vector) !== $this->dimension) {
+                        throw new \InvalidArgumentException("Vector dimension must match table dimension: {$this->dimension}");
+                    }
+
+                    $normalizedVector = $this->normalize($vector);
+                    $binaryCode = $this->vectorToHex($normalizedVector);
+                    $normalizedVectorBlob = $this->vectorToBlob($normalizedVector);
+
+                    $metadataJson = null;
+                    if (array_key_exists('metadata', $item)) {
+                        $metadata = $item['metadata'];
+                        $metadataJson = is_null($metadata) ? null : json_encode($metadata);
+                    }
+
+                    $statement->bind_param('sss', $normalizedVectorBlob, $binaryCode, $metadataJson);
+
+                    if (!$statement->execute()) {
+                        throw new \Exception("Execute failed: " . $statement->error);
+                    }
+
+                    $ids[] = $statement->insert_id;
                 }
-
-                $vector = $item['vector'];
-
-                if (count($vector) !== $this->dimension) {
-                    throw new \InvalidArgumentException("Vector dimension must match table dimension: {$this->dimension}");
-                }
-
-                $normalizedVector = $this->normalize($vector);
-                $binaryCode = $this->vectorToHex($normalizedVector);
-                $normalizedVectorBlob = $this->vectorToBlob($normalizedVector);
-
-                $metadataJson = null;
-                if (array_key_exists('metadata', $item)) {
-                    $metadata = $item['metadata'];
-                    $metadataJson = is_null($metadata) ? null : json_encode($metadata);
-                }
-
-                $statement->bind_param('sss', $normalizedVectorBlob, $binaryCode, $metadataJson);
-
-                if (!$statement->execute()) {
-                    throw new \Exception("Execute failed: " . $statement->error);
-                }
-
-                $ids[] = $statement->insert_id;
+            } finally {
+                $statement->close();
             }
 
             $this->mysqli->commit();
         } catch (\Exception $e) {
             $this->mysqli->rollback();
             throw $e;
-        } finally {
-            if (isset($statement) && $statement) {
-                $statement->close();
-            }
         }
 
         return $ids;
@@ -612,29 +612,37 @@ class VectorTable
         $placeholders = implode(', ', array_fill(0, count($ids), '?'));
         $escapedVectorTableName = $this->escapeIdentifier($this->getVectorTableName());
         $statement = $this->mysqli->prepare("SELECT id, normalized_vector, binary_code, metadata FROM {$escapedVectorTableName} WHERE id IN ({$placeholders})");
-        $types = str_repeat('i', count($ids));
-
-        $refs = [];
-        foreach ($ids as $key => &$id) {
-            $refs[$key] = &$id;
-        }
-        unset($id);
-
-        call_user_func_array([$statement, 'bind_param'], array_merge([$types], $refs));
-        $statement->execute();
-        $statement->bind_result($vectorId, $normalizedVectorBlob, $binaryCode, $metadataJson);
-
-        $result = [];
-        while ($statement->fetch()) {
-            $result[] = [
-                'id' => $vectorId,
-                'normalized_vector' => $this->blobToVector($normalizedVectorBlob),
-                'binary_code' => $binaryCode,
-                'metadata' => is_null( $metadataJson ) ? null : json_decode($metadataJson, true),
-            ];
+        if (!$statement) {
+            throw new \Exception($this->mysqli->error);
         }
 
-        $statement->close();
+        try {
+            $types = str_repeat('i', count($ids));
+
+            $refs = [];
+            foreach ($ids as $key => &$id) {
+                $refs[$key] = &$id;
+            }
+            unset($id);
+
+            call_user_func_array([$statement, 'bind_param'], array_merge([$types], $refs));
+            if (!$statement->execute()) {
+                throw new \Exception("Execute failed: " . $statement->error);
+            }
+            $statement->bind_result($vectorId, $normalizedVectorBlob, $binaryCode, $metadataJson);
+
+            $result = [];
+            while ($statement->fetch()) {
+                $result[] = [
+                    'id' => $vectorId,
+                    'normalized_vector' => $this->blobToVector($normalizedVectorBlob),
+                    'binary_code' => $binaryCode,
+                    'metadata' => is_null( $metadataJson ) ? null : json_decode($metadataJson, true),
+                ];
+            }
+        } finally {
+            $statement->close();
+        }
 
         return $result;
     }
@@ -656,20 +664,24 @@ class VectorTable
             throw new \Exception($this->mysqli->error);
         }
 
-        $statement->execute();
-        $statement->bind_result($vectorId, $normalizedVectorBlob, $binaryCode, $metadataJson);
+        try {
+            if (!$statement->execute()) {
+                throw new \Exception("Execute failed: " . $statement->error);
+            }
+            $statement->bind_result($vectorId, $normalizedVectorBlob, $binaryCode, $metadataJson);
 
-        $result = [];
-        while ($statement->fetch()) {
-            $result[] = [
-                'id' => $vectorId,
-                'normalized_vector' => $this->blobToVector($normalizedVectorBlob),
-                'binary_code' => $binaryCode,
-                'metadata' => is_null( $metadataJson ) ? null : json_decode($metadataJson, true),
-            ];
+            $result = [];
+            while ($statement->fetch()) {
+                $result[] = [
+                    'id' => $vectorId,
+                    'normalized_vector' => $this->blobToVector($normalizedVectorBlob),
+                    'binary_code' => $binaryCode,
+                    'metadata' => is_null( $metadataJson ) ? null : json_decode($metadataJson, true),
+                ];
+            }
+        } finally {
+            $statement->close();
         }
-
-        $statement->close();
 
         return $result;
     }
@@ -794,29 +806,30 @@ class VectorTable
         if (!$stmt) {
             throw new \Exception($this->mysqli->error);
         }
-        if ($useLimit) {
-            $types .= 'i';
-            $params[] = $limit;
-        }
-        if ($types !== '') {
-            $stmt->bind_param($types, ...$params);
-        }
-        if (!$stmt->execute()) {
-            $err = $stmt->error;
+        try {
+            if ($useLimit) {
+                $types .= 'i';
+                $params[] = $limit;
+            }
+            if ($types !== '') {
+                $stmt->bind_param($types, ...$params);
+            }
+            if (!$stmt->execute()) {
+                throw new \Exception("Execute failed: " . $stmt->error);
+            }
+            $stmt->bind_result($vectorId, $normalizedVectorBlob, $binaryCode, $metadataJson);
+            $result = [];
+            while ($stmt->fetch()) {
+                $result[] = [
+                    'id' => $vectorId,
+                    'normalized_vector' => $this->blobToVector($normalizedVectorBlob),
+                    'binary_code' => $binaryCode,
+                    'metadata' => is_null($metadataJson) ? null : json_decode($metadataJson, true),
+                ];
+            }
+        } finally {
             $stmt->close();
-            throw new \Exception("Execute failed: {$err}");
         }
-        $stmt->bind_result($vectorId, $normalizedVectorBlob, $binaryCode, $metadataJson);
-        $result = [];
-        while ($stmt->fetch()) {
-            $result[] = [
-                'id' => $vectorId,
-                'normalized_vector' => $this->blobToVector($normalizedVectorBlob),
-                'binary_code' => $binaryCode,
-                'metadata' => is_null($metadataJson) ? null : json_decode($metadataJson, true),
-            ];
-        }
-        $stmt->close();
         return $result;
     }
 
@@ -827,11 +840,19 @@ class VectorTable
     public function count(): int {
         $escapedVectorTableName = $this->escapeIdentifier($this->getVectorTableName());
         $statement = $this->mysqli->prepare("SELECT COUNT(id) FROM {$escapedVectorTableName}");
-        $statement->execute();
-        $statement->bind_result($count);
-        $statement->fetch();
-        $statement->close();
-        return $count;
+        if (!$statement) {
+            throw new \Exception($this->mysqli->error);
+        }
+        try {
+            if (!$statement->execute()) {
+                throw new \Exception("Execute failed: " . $statement->error);
+            }
+            $statement->bind_result($count);
+            $statement->fetch();
+            return (int)$count;
+        } finally {
+            $statement->close();
+        }
     }
 
     /**
@@ -889,14 +910,19 @@ class VectorTable
         if (!$statement) {
             throw new \Exception("Failed to prepare search query: " . $this->mysqli->error);
         }
-        $statement->bind_param('si', $binaryCode, $n);
-        $statement->execute();
-        $statement->bind_result($candidateId);
         $candidateIds = [];
-        while ($statement->fetch()) {
-            $candidateIds[] = (int)$candidateId;
+        try {
+            $statement->bind_param('si', $binaryCode, $n);
+            if (!$statement->execute()) {
+                throw new \Exception("Execute failed: " . $statement->error);
+            }
+            $statement->bind_result($candidateId);
+            while ($statement->fetch()) {
+                $candidateIds[] = (int)$candidateId;
+            }
+        } finally {
+            $statement->close();
         }
-        $statement->close();
 
         // Avoid invalid SQL
         if (empty($candidateIds)) {
@@ -911,21 +937,22 @@ class VectorTable
         if (!$stmtVectors) {
             throw new \Exception("Failed to prepare vector fetch query: " . $this->mysqli->error);
         }
-        if (!$stmtVectors->execute()) {
-            $err = $stmtVectors->error;
+        try {
+            if (!$stmtVectors->execute()) {
+                throw new \Exception("Execute failed: " . $stmtVectors->error);
+            }
+            $stmtVectors->bind_result($vectorId, $normalizedVectorBlob);
+            $results = [];
+            while ($stmtVectors->fetch()) {
+                $vec = $this->blobToVector($normalizedVectorBlob);
+                $results[(int)$vectorId] = [
+                    'id' => (int)$vectorId,
+                    'similarity' => $this->dot($vec, $queryVector), // compute similarity for PHP-side re-ranking
+                ];
+            }
+        } finally {
             $stmtVectors->close();
-            throw new \Exception("Execute failed: {$err}");
         }
-        $stmtVectors->bind_result($vectorId, $normalizedVectorBlob);
-        $results = [];
-        while ($stmtVectors->fetch()) {
-            $vec = $this->blobToVector($normalizedVectorBlob);
-            $results[(int)$vectorId] = [
-                'id' => (int)$vectorId,
-                'similarity' => $this->dot($vec, $queryVector), // compute similarity for PHP-side re-ranking
-            ];
-        }
-        $stmtVectors->close();
 
         // PHP-side re-ranking
         uasort($results, static function($a, $b) {
@@ -951,16 +978,18 @@ class VectorTable
         if (!$stmtMeta) {
             throw new \Exception("Failed to prepare metadata query: " . $this->mysqli->error);
         }
-        if (!$stmtMeta->execute()) {
-            $err = $stmtMeta->error;
+        try {
+            if (!$stmtMeta->execute()) {
+                throw new \Exception("Execute failed: " . $stmtMeta->error);
+            }
+            $stmtMeta->bind_result($mid, $metadataJson);
+            while ($stmtMeta->fetch()) {
+                $results[(int)$mid]['metadata'] = is_null($metadataJson) ? null : json_decode($metadataJson, true);
+            }
+        } finally {
             $stmtMeta->close();
-            throw new \Exception("Execute failed: {$err}");
         }
-        $stmtMeta->bind_result($mid, $metadataJson);
-        while ($stmtMeta->fetch()) {
-            $results[(int)$mid]['metadata'] = is_null($metadataJson) ? null : json_decode($metadataJson, true);
-        }
-        $stmtMeta->close();
+
 
         return array_values($results);
     }
@@ -1000,12 +1029,17 @@ class VectorTable
     public function delete(int $id): void {
         $escapedVectorTableName = $this->escapeIdentifier($this->getVectorTableName());
         $statement = $this->mysqli->prepare("DELETE FROM {$escapedVectorTableName} WHERE id = ?");
-        $statement->bind_param('i', $id);
-        $success = $statement->execute();
-        if(!$success) {
-            throw new \Exception($statement->error);
+        if (!$statement) {
+            throw new \Exception($this->mysqli->error);
         }
-        $statement->close();
+        try {
+            $statement->bind_param('i', $id);
+            if (!$statement->execute()) {
+                throw new \Exception($statement->error);
+            }
+        } finally {
+            $statement->close();
+        }
     }
 
     public function getConnection(): \mysqli {
