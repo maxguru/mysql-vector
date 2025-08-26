@@ -99,7 +99,7 @@ class PerformanceBenchmarkTest extends BaseVectorTest
                 for($j = 0; $j < $dimension; $j++) {
                     $vector[$j] = 2 * (mt_rand(0, 1000) / 1000) - 1;
                 }
-                $chunk[] = $vector;
+                $chunk[] = ['vector' => $vector];
             }
 
             echo "    Processing chunk: " . ($inserted + 1) . "-" . ($inserted + $remaining) . "/$count\n";

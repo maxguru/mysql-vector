@@ -36,10 +36,11 @@ Normalized vector storage uses VARBINARY(4 * dimension). MySQL's maximum VARBINA
 - Vector operations: insertion, deletion, retrieval, and search by cosine similarity.
 - Support for high-dimensional vectors (up to 16,383 dimensions).
 - Batch insert operations for efficient bulk vector storage.
+- Optional per-vector `metadata` stored as JSON included in retrieval and search results.
 
 ## Requirements
 - PHP 8.0 or higher.
-- MySQL 5.7 or higher.
+- MySQL 5.7.6 or higher / MariaDB 10.2.0 or higher.
 - A MySQLi extension for PHP.
 
 ## Installation
@@ -84,13 +85,14 @@ For more control, you can initialize tables separately:
 ```php
 // Initialize tables for multiple vector tables
 $vectorTable1->initializeTables();
-$vectorTable2->initializeTables();
+$vectorTable2->initializeTables(['$.content_type' => 'ENUM("pdf","doc","txt","html")', '$.content_id' => 'INT']); // Typed JSON path indexes
 ```
 
 The table schema includes:
 - `id`: Auto-incrementing primary key
 - `normalized_vector`: VARBINARY(4 * dimension) storing the L2-normalized vector in little-endian float32 format
 - `binary_code`: VARBINARY column storing the binary quantized representation for fast filtering
+- `metadata`: JSON column for optional per-vector metadata (NULL if absent)
 
 #### Cleanup and Deinitialization
 The library provides comprehensive cleanup capabilities:
@@ -105,19 +107,25 @@ $vectorTable->deinitialize();
 ### Inserting and Managing Vectors
 ```php
 // Insert a new vector
-$vector = [0.1, 0.2, 0.3, ..., 0.384];
+$vector = [0.1, 0.2, 0.3, /* ... */ 0.384];
 $vectorId = $vectorTable->upsert($vector);
 
-// Update an existing vector
-$vectorTable->upsert($vector, $vectorId);
+// Insert a new vector with metadata
+$vector = [0.1, 0.2, 0.3 /* ... */ 0.384];
+$metadata = ['content_type' => 'pdf', 'content_id' => 123, 'chunk_hash' => '123456'];
+$vectorId = $vectorTable->upsert($vector, $metadata);
 
-// Batch insert multiple vectors for better performance
-$vectors = [
-    [0.1, 0.2, 0.3, ...],
-    [0.4, 0.5, 0.6, ...],
-    // ... more vectors
+// Update an existing vector by ID
+$updatedVector = [0.2, 0.1, 0.0, /* ... */ 0.123];
+$updatedMetadata = ['content_type' => 'pdf', 'content_id' => 123, 'chunk_hash' => 'abcdef'];
+$vectorTable->upsert($updatedVector, $updatedMetadata, $vectorId);
+
+// Batch insert multiple vectors (each item contains a vector and optional metadata)
+$items = [
+    ['vector' => [0.1, 0.2, 0.3 /* ... */], 'metadata' => ['content_type' => 'pdf', 'content_id' => 123, 'chunk_hash' => 'aaa111']],
+    ['vector' => [0.4, 0.5, 0.6 /* ... */], 'metadata' => ['content_type' => 'pdf', 'content_id' => 124, 'chunk_hash' => 'bbb222']],
 ];
-$vectorIds = $vectorTable->batchInsert($vectors);
+$vectorIds = $vectorTable->batchInsert($items);
 
 // Delete a vector
 $vectorTable->delete($vectorId);
@@ -138,8 +146,11 @@ $similarVectors = $vectorTable->search($vector, $topN);
 // Results include:
 // - 'id': Vector ID
 // - 'similarity': Cosine similarity score
+// - 'metadata': Optional JSON metadata stored with the vector
 foreach ($similarVectors as $result) {
-    echo "Vector ID: {$result['id']}, Similarity: {$result['similarity']}\n";
+    echo "Vector ID: {$result['id']}\n";
+    echo "Similarity: {$result['similarity']}\n";
+    echo 'Metadata: ' . json_encode($result['metadata']) . "\n";
 }
 ```
 
@@ -148,11 +159,14 @@ foreach ($similarVectors as $result) {
 // Count total vectors in the table
 $totalVectors = $vectorTable->count();
 
-// Select specific vectors by ID
+// Select specific vectors by ID (returns metadata if present)
 $vectors = $vectorTable->select([1, 2, 3]);
 
 // Select all vectors
 $allVectors = $vectorTable->selectAll();
+
+// Filter by metadata by JSON path values
+$byType = $vectorTable->selectByMetadata(['$.content_type' => 'pdf', '$.content_id' => 456]);
 
 // Get table name and dimension
 $tableName = $vectorTable->getVectorTableName();

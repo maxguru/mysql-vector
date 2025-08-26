@@ -8,11 +8,15 @@ class VectorTable
     private int $dimension;
     private string $engine;
     private \mysqli $mysqli;
+    private ?array $metadataIndexMap = null;
 
     // Maximum supported vector dimensions, currently limited by VARBINARY storage
     // `normalized_vector` column uses VARBINARY(4 * dimension); VARBINARY max length in MySQL is 65,535 bytes
     // maximum supported dimensions for float32 storage = floor(65535 bytes / 4 bytes per float32) = 16383
     public const MAX_DIMENSIONS = 16383;
+
+    // Safe default for utf8mb4 in MySQL 5.7: 191 characters (191*4=764 bytes < 767-byte limit)
+    private const INDEX_PREFIX_LENGTH = 191;
 
     /**
      * Instantiate a new VectorTable object.
@@ -62,6 +66,146 @@ class VectorTable
     }
 
     /**
+     * Determine support for virtual generated columns with indexes
+     */
+    private function supportsVirtualGeneratedColumns(): bool
+    {
+        $info = $this->mysqli->server_info;
+        $isMaria = stripos($info, 'mariadb') !== false;
+        if ($isMaria) {
+            // Extract version before -MariaDB
+            if (preg_match('/(\d+\.\d+\.\d+)/i', $info, $m)) {
+                return version_compare($m[1], '10.2.0', '>=');
+            }
+            return false;
+        }
+        // MySQL
+        if (preg_match('/(\d+\.\d+\.\d+)/', $info, $m)) {
+            return version_compare($m[1], '5.7.6', '>=');
+        }
+        return false;
+    }
+
+    /**
+     * Validate JSON path format (e.g., $.a.b.c)
+     * Returns the same path if valid, otherwise throws InvalidArgumentException
+     */
+    private function validateJsonPath(string $path): string
+    {
+        $path = trim($path);
+        if ($path === '') {
+            throw new \InvalidArgumentException('JSON path cannot be empty');
+        }
+        if ($path[0] !== '$') {
+            throw new \InvalidArgumentException('JSON path must start with $.');
+        }
+        // Strict allowed pattern: $.identifier(.identifier)*
+        if (!preg_match('/^\$\.(?:[A-Za-z_][A-Za-z0-9_]*)(?:\.(?:[A-Za-z_][A-Za-z0-9_]*))*$/', $path)) {
+            throw new \InvalidArgumentException('Invalid JSON path format: ' . $path);
+        }
+        return $path;
+    }
+
+    /**
+     * Map an SQL column type to a JSON primitive type: string|integer|float|boolean|null
+     * DECIMAL/NUMERIC are treated as float; DATETIME/TIMESTAMP as integer (unix epoch);
+     * DATE as string; TINYINT(1) as boolean; other TINYINT as integer.
+     */
+    private function detectPrimitiveType(string $sqlType): string
+    {
+        $t = strtoupper(trim($sqlType));
+        // Extract base type token
+        $base = preg_match('/^([A-Z]+)\b/', $t, $m) ? $m[1] : $t;
+        switch ($base) {
+            case 'TINYINT':
+                // BOOLEAN/TINYINT(1) map to boolean; other TINYINT map to integer
+                if (preg_match('/TINYINT\s*\(\s*1\s*\)/', $t)) { return 'boolean'; }
+                return 'integer';
+            case 'BOOLEAN':
+                return 'boolean';
+            case 'SMALLINT':
+            case 'MEDIUMINT':
+            case 'INT':
+            case 'INTEGER':
+            case 'BIGINT':
+            case 'DATETIME':
+            case 'TIMESTAMP':
+                return 'integer';
+            case 'DECIMAL':
+            case 'NUMERIC':
+            case 'FLOAT':
+            case 'DOUBLE':
+            case 'REAL':
+                return 'float';
+            default:
+                return 'string';
+        }
+    }
+
+    /**
+     * Determine if the SQL type requires an index prefix length when creating an index.
+     * Returns true for TEXT/BLOB families and very large VARCHAR columns where full-length index may exceed limits.
+     */
+    private function requiresIndexPrefixLength(string $sqlType): bool
+    {
+        $t = strtoupper(trim($sqlType));
+        // TEXT/BLOB families always require a prefix length
+        if (preg_match('/\b(TINYTEXT|TEXT|MEDIUMTEXT|LONGTEXT|TINYBLOB|BLOB|MEDIUMBLOB|LONGBLOB)\b/', $t)) {
+            return true;
+        }
+        // Heuristic for large VARCHAR: if declared length > 191 (utf8mb4 safe default)
+        if (preg_match('/\bVARCHAR\s*\(\s*(\d+)\s*\)/', $t, $m)) {
+            $len = (int)$m[1];
+            return $len > self::INDEX_PREFIX_LENGTH;
+        }
+        return false;
+    }
+
+    /**
+     * Get the metadata index map for this table, lazily detecting existing generated columns
+     */
+    private function getMetadataIndexMap(): array
+    {
+        if ($this->metadataIndexMap !== null) {
+            return $this->metadataIndexMap;
+        }
+
+        $this->metadataIndexMap = [];
+
+        $tableName = $this->getVectorTableName();
+        $sql = "SELECT COLUMN_NAME, COLUMN_TYPE, GENERATION_EXPRESSION
+                FROM INFORMATION_SCHEMA.COLUMNS
+                WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = ? AND COLUMN_NAME LIKE 'meta\\_%'";
+        $stmt = $this->mysqli->prepare($sql);
+        if ($stmt) {
+            $stmt->bind_param('s', $tableName);
+            if ($stmt->execute()) {
+                $stmt->bind_result($colName, $colType, $genExpr);
+                while ($stmt->fetch()) {
+                    $path = null;
+                    if (is_string($genExpr)) {
+                        // Extract JSON path from generated column expression like
+                        // JSON_EXTRACT(`metadata`, '$.content_type') and
+                        // JSON_UNQUOTE(JSON_EXTRACT(metadata, _utf8mb4'$.price'))
+                        if (preg_match("/JSON_EXTRACT\\s*\\(\\s*`?metadata`?\\s*,\\s*(?:_[A-Za-z0-9]+)?\\s*'([^']+)'\\s*\\)/i", $genExpr, $m)) {
+                            $path = $m[1];
+                        }
+                    }
+                    if ($path !== null) {
+                        $this->metadataIndexMap[$path] = [
+                            'column' => $colName,
+                            'primitive_type' => $this->detectPrimitiveType($colType),
+                        ];
+                    }
+                }
+            }
+            $stmt->close();
+        }
+
+        return $this->metadataIndexMap;
+    }
+
+    /**
      * Convert an n-dimensional vector into an n-bit binary code using optimized chunking
      * @param array $vector Input vector
      * @return string Hexadecimal representation of binary quantized vector
@@ -106,11 +250,14 @@ class VectorTable
 
     /**
      * Initialize the tables for this VectorTable instance
+     * Optionally create generated columns and indexes for JSON metadata paths
      * Fails if tables have already been created
+     * @param array $metadataJsonPathIndexes Map of JSON paths to SQL types for generated columns and indexes.
+     *        Example: ['$.content_type' => 'ENUM("pdf","doc","txt","html")', '$.content_id' => 'INT', '$.price' => 'DECIMAL(10,2)']
      * @return void
      * @throws \Exception If the tables could not be created (e.g., table already exists)
      */
-    public function initializeTables(): void
+    public function initializeTables(array $metadataJsonPathIndexes = []): void
     {
         // Build all SQL statements for single multi-query execution with proper escaping
         $binaryCodeLengthInBytes = ceil($this->dimension / 8);
@@ -119,11 +266,85 @@ class VectorTable
 
         $normalizedVectorLengthInBytes = 4 * $this->dimension; // float32 per component
 
+        // If JSON path indexes are requested, create virtual generated columns + indexes
+        $metadataIndexMap = [];
+        $metadataColsIndexes = "";
+        if (!empty($metadataJsonPathIndexes)) {
+
+            if (!$this->supportsVirtualGeneratedColumns()) {
+                throw new \Exception('Virtual generated columns with indexes require MySQL >= 5.7.6 or MariaDB >= 10.2.0');
+            }
+
+            $metadataColumns = [];
+            $metadataIndexes = [];
+            
+            foreach ($metadataJsonPathIndexes as $path => $sqlTypeSpec) {
+                // Validate JSON path
+                $path = $this->validateJsonPath($path);
+
+                // Validate SQL type
+                $sqlType = trim((string)$sqlTypeSpec);
+                if ($sqlType === '') {
+                    throw new \InvalidArgumentException("Empty SQL type for metadata index path: {$path}");
+                }
+
+                // Derive column and index names from JSON path
+                // Remove leading '$.', replace non-alphanumeric/underscore with underscores
+                $colName = 'metadata_' . preg_replace('/[^A-Za-z0-9_]/', '_', substr($path, 2));
+                $idxName = 'idx_' . $colName;
+                $escapedColName = $this->escapeIdentifier($colName);
+                $escapedIdxName = $this->escapeIdentifier($idxName);
+                $escapedPath = $this->mysqli->real_escape_string($path);
+
+                // Create generated column definition
+                // Determine expression based on SQL type family (case-insensitive)
+                $primitiveType = $this->detectPrimitiveType($sqlType);
+                // Precompute common fragments
+                $jx = "JSON_EXTRACT(`metadata`, '" . $escapedPath . "')";   // JSON value
+                $ju = "JSON_UNQUOTE($jx)";                                  // string value
+                switch ($primitiveType) {
+                    case 'boolean':
+                        // Map JSON booleans true/false to 1/0, fallback to numeric cast
+                        $expr = "CASE $jx WHEN true THEN 1 WHEN false THEN 0 ELSE CAST($ju AS SIGNED) END";
+                        break;
+                    case 'integer':
+                        $expr = "CAST($ju AS SIGNED)";
+                        break;
+                    case 'float':
+                        $expr = "CAST($ju AS {$sqlType})";
+                        break;
+                    default: // string-like
+                        $expr = $ju;
+                        break;
+                }
+                $metadataColumns[] = "{$escapedColName} {$sqlType} GENERATED ALWAYS AS ({$expr}) VIRTUAL";
+
+                // Create index definition
+                if ($this->requiresIndexPrefixLength($sqlType)) { // determine if a prefix length is needed
+                    $metadataIndexes[] = "INDEX {$escapedIdxName} ({$escapedColName}(" . self::INDEX_PREFIX_LENGTH . "))";
+                } else {
+                    $metadataIndexes[] = "INDEX {$escapedIdxName} ({$escapedColName})";
+                }
+
+                // Map JSON path to generated column info
+                $metadataIndexMap[$path] = [
+                    'column' => $colName,
+                    'primitive_type' => $this->detectPrimitiveType($sqlType),
+                ];
+            }
+
+            if (!empty($metadataColumns)) {
+                $metadataColsIndexes .= ", " . implode(", ", $metadataColumns) . ", " . implode(", ", $metadataIndexes);
+            }
+        }
+
         $queries = "
             CREATE TABLE {$escapedVectorTableName} (
                 id INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
                 normalized_vector VARBINARY({$normalizedVectorLengthInBytes}),
-                binary_code VARBINARY({$binaryCodeLengthInBytes})
+                binary_code VARBINARY({$binaryCodeLengthInBytes}),
+                metadata JSON DEFAULT NULL
+                {$metadataColsIndexes}
             ) ENGINE={$engine};
         ";
 
@@ -133,6 +354,9 @@ class VectorTable
 
         // Clear all results from multi-query
         do { if ($result = $this->mysqli->store_result()) { $result->free(); } } while ($this->mysqli->next_result());
+
+        // Cache index map
+        $this->metadataIndexMap = $metadataIndexMap;
     }
 
     /**
@@ -218,6 +442,9 @@ class VectorTable
 
         // Clear all results from multi-query
         do { if ($result = $this->mysqli->store_result()) { $result->free(); } } while ($this->mysqli->next_result());
+
+        // Invalidate cached index map
+        $this->metadataIndexMap = null;
     }
 
     /**
@@ -263,11 +490,12 @@ class VectorTable
     /**
      * Insert or update a vector
      * @param array $vector The vector to insert or update
+     * @param array|null $metadata Optional metadata to store (JSON-serializable)
      * @param int|null $id Optional ID of the vector to update
      * @return int The ID of the inserted or updated vector
      * @throws \Exception If the vector could not be inserted or updated
      */
-    public function upsert(array $vector, ?int $id = null): int
+    public function upsert(array $vector, ?array $metadata = null, ?int $id = null): int
     {
         // Validate vector dimension
         if (count($vector) !== $this->dimension) {
@@ -279,8 +507,8 @@ class VectorTable
         $escapedTableName = $this->escapeIdentifier($this->getVectorTableName());
 
         $insertQuery = empty($id) ?
-            "INSERT INTO {$escapedTableName} (normalized_vector, binary_code) VALUES (?, UNHEX(?))" :
-            "UPDATE {$escapedTableName} SET normalized_vector = ?, binary_code = UNHEX(?) WHERE id = ?";
+            "INSERT INTO {$escapedTableName} (normalized_vector, binary_code, metadata) VALUES (?, UNHEX(?), ?)" :
+            "UPDATE {$escapedTableName} SET normalized_vector = ?, binary_code = UNHEX(?), metadata = ? WHERE id = ?";
 
         $statement = $this->mysqli->prepare($insertQuery);
         if(!$statement) {
@@ -288,11 +516,12 @@ class VectorTable
         }
 
         $normalizedVectorBlob = $this->vectorToBlob($normalizedVector);
+        $metadataJson = is_null($metadata) ? null : json_encode($metadata);
 
         if(empty($id)) {
-            $statement->bind_param('ss', $normalizedVectorBlob, $binaryCode);
+            $statement->bind_param('sss', $normalizedVectorBlob, $binaryCode, $metadataJson);
         } else {
-            $statement->bind_param('ssi', $normalizedVectorBlob, $binaryCode, $id);
+            $statement->bind_param('sssi', $normalizedVectorBlob, $binaryCode, $metadataJson, $id);
         }
 
         $success = $statement->execute();
@@ -307,25 +536,31 @@ class VectorTable
     }
 
     /**
-     * Insert multiple vectors in a single query
-     * @param array $vectorArray Array of vectors to insert
+     * Insert multiple vectors (with optional per-item metadata) in a single transaction
+     * @param array $vectorData Array of items: [ ['vector' => array<float>, 'metadata' => array|null], ... ]
      * @return array Array of ids of the inserted vectors
      * @throws \Exception
      */
-    public function batchInsert(array $vectorArray): array {
+    public function batchInsert(array $vectorData): array {
         $ids = [];
 
         $this->mysqli->begin_transaction();
 
         try {
             $escapedTableName = $this->escapeIdentifier($this->getVectorTableName());
-            $statement = $this->mysqli->prepare("INSERT INTO {$escapedTableName} (normalized_vector, binary_code) VALUES (?, UNHEX(?))");
+            $statement = $this->mysqli->prepare("INSERT INTO {$escapedTableName} (normalized_vector, binary_code, metadata) VALUES (?, UNHEX(?), ?)");
             if(!$statement) {
                 throw new \Exception("Prepare failed: " . $this->mysqli->error);
             }
 
-            foreach ($vectorArray as $vector) {
-                // Validate vector dimension
+            foreach ($vectorData as $item) {
+
+                if (!is_array($item) || !array_key_exists('vector', $item)) {
+                    throw new \InvalidArgumentException('batchInsert expects each item to have a vector key');
+                }
+
+                $vector = $item['vector'];
+
                 if (count($vector) !== $this->dimension) {
                     throw new \InvalidArgumentException("Vector dimension must match table dimension: {$this->dimension}");
                 }
@@ -334,7 +569,13 @@ class VectorTable
                 $binaryCode = $this->vectorToHex($normalizedVector);
                 $normalizedVectorBlob = $this->vectorToBlob($normalizedVector);
 
-                $statement->bind_param('ss', $normalizedVectorBlob, $binaryCode);
+                $metadataJson = null;
+                if (array_key_exists('metadata', $item)) {
+                    $metadata = $item['metadata'];
+                    $metadataJson = is_null($metadata) ? null : json_encode($metadata);
+                }
+
+                $statement->bind_param('sss', $normalizedVectorBlob, $binaryCode, $metadataJson);
 
                 if (!$statement->execute()) {
                     throw new \Exception("Execute failed: " . $statement->error);
@@ -360,13 +601,17 @@ class VectorTable
      * Select one or more vectors by id
      * @param \mysqli $mysqli The mysqli connection
      * @param array $ids The ids of the vectors to select
-     * @return array Array of vectors
+     * @return array Array of results, each containing:
+     *               - 'id' (int)
+     *               - 'normalized_vector' (array<float>)
+     *               - 'binary_code' (string)
+     *               - 'metadata' (array|null)
      */
     public function select(array $ids): array {
 
         $placeholders = implode(', ', array_fill(0, count($ids), '?'));
         $escapedVectorTableName = $this->escapeIdentifier($this->getVectorTableName());
-        $statement = $this->mysqli->prepare("SELECT id, normalized_vector, binary_code FROM {$escapedVectorTableName} WHERE id IN ({$placeholders})");
+        $statement = $this->mysqli->prepare("SELECT id, normalized_vector, binary_code, metadata FROM {$escapedVectorTableName} WHERE id IN ({$placeholders})");
         $types = str_repeat('i', count($ids));
 
         $refs = [];
@@ -377,14 +622,15 @@ class VectorTable
 
         call_user_func_array([$statement, 'bind_param'], array_merge([$types], $refs));
         $statement->execute();
-        $statement->bind_result($vectorId, $normalizedVectorBlob, $binaryCode);
+        $statement->bind_result($vectorId, $normalizedVectorBlob, $binaryCode, $metadataJson);
 
         $result = [];
         while ($statement->fetch()) {
             $result[] = [
                 'id' => $vectorId,
                 'normalized_vector' => $this->blobToVector($normalizedVectorBlob),
-                'binary_code' => $binaryCode
+                'binary_code' => $binaryCode,
+                'metadata' => is_null( $metadataJson ) ? null : json_decode($metadataJson, true),
             ];
         }
 
@@ -393,29 +639,184 @@ class VectorTable
         return $result;
     }
 
+    /**
+     * Select all vectors in the table
+     * @return array Array of results, each containing:
+     *               - 'id' (int)
+     *               - 'normalized_vector' (array<float>)
+     *               - 'binary_code' (string)
+     *               - 'metadata' (array|null)
+     */
     public function selectAll(): array {
 
         $escapedVectorTableName = $this->escapeIdentifier($this->getVectorTableName());
-        $statement = $this->mysqli->prepare("SELECT id, normalized_vector, binary_code FROM {$escapedVectorTableName}");
+        $statement = $this->mysqli->prepare("SELECT id, normalized_vector, binary_code, metadata FROM {$escapedVectorTableName}");
 
         if (!$statement) {
             throw new \Exception($this->mysqli->error);
         }
 
         $statement->execute();
-        $statement->bind_result($vectorId, $normalizedVectorBlob, $binaryCode);
+        $statement->bind_result($vectorId, $normalizedVectorBlob, $binaryCode, $metadataJson);
 
         $result = [];
         while ($statement->fetch()) {
             $result[] = [
                 'id' => $vectorId,
                 'normalized_vector' => $this->blobToVector($normalizedVectorBlob),
-                'binary_code' => $binaryCode
+                'binary_code' => $binaryCode,
+                'metadata' => is_null( $metadataJson ) ? null : json_decode($metadataJson, true),
             ];
         }
 
         $statement->close();
 
+        return $result;
+    }
+
+    /**
+     * Select vectors filtered by JSON metadata using simple AND of equality conditions.
+     *
+     * Input shape: associative array of JSON path => value pairs, e.g.:
+     *   ['$.content_type' => 'pdf', '$.content_id' => 456, '$.chunk_hash' => null]
+     *
+     * Semantics:
+     * - Each entry is treated as equality on the exact JSON path key provided (must start with $)
+     * - For value === null, this matches three cases:
+     *     1) the path exists with an explicit JSON null value
+     *     2) the path is missing from the JSON object
+     *     3) the entire metadata column is NULL
+     * - If a generated column index exists for a path, use it (fast) with type-aware binding based on metadata index map.
+     * - Otherwise use JSON_EXTRACT fallback and infer JSON primitive type from PHP values.
+     *
+     * @param array $conditions Associative map of JSON paths to values (ANDed together)
+     * @param int|null $limit Optional LIMIT
+     * @return array Array of results, each containing:
+     *               - 'id' (int)
+     *               - 'normalized_vector' (array<float>)
+     *               - 'binary_code' (string)
+     *               - 'metadata' (array|null)
+     * @throws \Exception on SQL preparation/errors or invalid input
+     */
+    public function selectByMetadata(array $conditions, ?int $limit = null): array
+    {
+        $escapedTableName = $this->escapeIdentifier($this->getVectorTableName());
+        $metadataIndexMap = $this->getMetadataIndexMap();
+
+        $clauses = [];
+        $params = [];
+        $types = '';
+        foreach ($conditions as $path => $value) {
+            // Validate JSON path
+            $path = $this->validateJsonPath((string)$path);
+
+            if (isset($metadataIndexMap[$path]) && is_array($metadataIndexMap[$path])) {
+                // Use generated column index with type awareness
+                $colInfo = $metadataIndexMap[$path];
+                $col = $this->escapeIdentifier($colInfo['column']);
+                $primitiveType = $colInfo['primitive_type'];
+                if ($value === null) {
+                    $clauses[] = "{$col} IS NULL";
+                } else {
+                    $bindVal = null; $bindType = null;
+                    switch ($primitiveType) {
+                        case 'integer':
+                            if (!is_numeric($value)) {
+                                throw new \InvalidArgumentException("Expected integer for {$path}");
+                            }
+                            $bindVal = (int)$value; $bindType = 'i';
+                            break;
+                        case 'float':
+                            if (!is_numeric($value)) {
+                                throw new \InvalidArgumentException("Expected float for {$path}");
+                            }
+                            $bindVal = (float)$value; $bindType = 'd';
+                            break;
+                        case 'boolean':
+                            if (is_bool($value) || is_int($value)) {
+                                $bindVal = (bool)$value ? 1 : 0;
+                            } else {
+                                $t = strtolower(trim((string)$value));
+                                if ($t === 'true' || $t === '1') { $bindVal = 1; }
+                                elseif ($t === 'false' || $t === '0') { $bindVal = 0; }
+                                else {
+                                    throw new \InvalidArgumentException("Expected boolean true/false or 0/1 for {$path}");
+                                }
+                            }
+                            $bindType = 'i';
+                            break;
+                        case 'string':
+                        default:
+                            $bindVal = (string)$value; $bindType = 's';
+                            break;
+                    }
+                    $clauses[] = "{$col} = ?";
+                    $params[] = $bindVal; $types .= $bindType;
+                }
+            } else {
+                // Fallback to JSON_EXTRACT: infer JSON primitive from PHP type
+                if ($value === null) {
+                    $clauses[] = "(JSON_EXTRACT(metadata, ?) IS NULL OR JSON_EXTRACT(metadata, ?) = CAST('null' AS JSON))";
+                    $params[] = $path; $types .= 's';
+                    $params[] = $path; $types .= 's';
+                } else {
+                    // Map PHP types to JSON primitives
+                    if (is_int($value)) {
+                        $json = (string)$value;
+                    } elseif (is_float($value)) {
+                        $json = (string)+$value;
+                    } elseif (is_bool($value)) {
+                        $json = $value ? 'true' : 'false';
+                    } elseif (is_string($value)) {
+                        $json = json_encode($value);
+                    } else {
+                        $json = json_encode((string)$value);
+                    }
+                    $clauses[] = "JSON_EXTRACT(metadata, ?) = CAST(? AS JSON)";
+                    $params[] = $path; $types .= 's';
+                    $params[] = $json; $types .= 's';
+                }
+            }
+        }
+        
+        if (empty($clauses)) {
+            throw new \InvalidArgumentException('selectByMetadata requires at least one valid JSON path => value pair');
+        }
+
+        $where = implode(' AND ', $clauses);
+        $sql = "SELECT id, normalized_vector, binary_code, metadata FROM {$escapedTableName} WHERE {$where}";
+        $useLimit = $limit !== null && $limit > 0;
+        if ($useLimit) {
+            $sql .= ' LIMIT ?';
+        }
+
+        $stmt = $this->mysqli->prepare($sql);
+        if (!$stmt) {
+            throw new \Exception($this->mysqli->error);
+        }
+        if ($useLimit) {
+            $types .= 'i';
+            $params[] = $limit;
+        }
+        if ($types !== '') {
+            $stmt->bind_param($types, ...$params);
+        }
+        if (!$stmt->execute()) {
+            $err = $stmt->error;
+            $stmt->close();
+            throw new \Exception("Execute failed: {$err}");
+        }
+        $stmt->bind_result($vectorId, $normalizedVectorBlob, $binaryCode, $metadataJson);
+        $result = [];
+        while ($stmt->fetch()) {
+            $result[] = [
+                'id' => $vectorId,
+                'normalized_vector' => $this->blobToVector($normalizedVectorBlob),
+                'binary_code' => $binaryCode,
+                'metadata' => is_null($metadataJson) ? null : json_decode($metadataJson, true),
+            ];
+        }
+        $stmt->close();
         return $result;
     }
 
@@ -460,6 +861,7 @@ class VectorTable
      * @return array Array of results, each containing:
      *               - 'id': Vector ID
      *               - 'similarity': Cosine similarity [-1, 1]
+     *               - 'metadata': Associated metadata (array|null)
      * @throws \Exception If database operations fail or invalid input
      */
     public function search(array $vector, int $n = 10): array
@@ -521,6 +923,32 @@ class VectorTable
         if (count($results) > $n) {
             $results = array_slice($results, 0, $n);
         }
+
+        // Fetch metadata for top-N only, in a single simple query using a numeric IN list
+        $ids = [];
+        foreach ($results as $r) { $ids[] = (int)$r['id']; }
+        $sqlMeta = "SELECT id, metadata FROM {$escapedTableName} WHERE id IN (" . implode(', ', $ids) . ")";
+        $stmtMeta = $this->mysqli->prepare($sqlMeta);
+        if (!$stmtMeta) {
+            throw new \Exception("Failed to prepare metadata query: " . $this->mysqli->error);
+        }
+        if (!$stmtMeta->execute()) {
+            $err = $stmtMeta->error;
+            $stmtMeta->close();
+            throw new \Exception("Execute failed: {$err}");
+        }
+        $stmtMeta->bind_result($mid, $metadataJson);
+        $metaById = [];
+        while ($stmtMeta->fetch()) {
+            $metaById[(int)$mid] = is_null($metadataJson) ? null : json_decode($metadataJson, true);
+        }
+        $stmtMeta->close();
+
+        // Merge metadata into results
+        foreach ($results as &$row) {
+            $row['metadata'] = $metaById[(int)$row['id']] ?? null;
+        }
+        unset($row);
 
         return $results;
     }

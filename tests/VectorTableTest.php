@@ -65,7 +65,8 @@ class VectorTableTest extends BaseVectorTest
 
         echo "Inserting another $this->testVectorAmount vectors in a batch...\n";
         $time = microtime(true);
-        $vectorTable->batchInsert($vecArray);
+        $items = array_map(function($v) { return ['vector' => $v]; }, $vecArray);
+        $vectorTable->batchInsert($items);
 
         $time = microtime(true) - $time;
         echo "Elapsed time: " . sprintf("%.2f", $time) . " seconds\n";
@@ -74,7 +75,7 @@ class VectorTableTest extends BaseVectorTest
 
         $id = $lastId;
         $newVec = $this->getRandomVectors(1, $this->dimension)[0];
-        $vectorTable->upsert($newVec, $id);
+        $vectorTable->upsert($newVec, null, $id);
         $r = $vectorTable->select([$id]);
         $this->assertCount(1, $r);
         // Verify that the stored vector matches what the normalize() method would produce
@@ -291,7 +292,7 @@ class VectorTableTest extends BaseVectorTest
         // Insert $this->testVectorAmount random vectors
         for($i = 0; $i < $multiples; $i++) {
             $vecs = $this->getRandomVectors($this->testVectorAmount, $this->dimension);
-            $vectorTable->batchInsert($vecs);
+            $vectorTable->batchInsert(array_map(function($v){ return ['vector' => $v]; }, $vecs));
         }
 
         // Let's insert a known vector
@@ -360,5 +361,212 @@ class VectorTableTest extends BaseVectorTest
             $this->assertStringContainsString('Maximum supported dimension', $msg);
             $this->assertStringContainsString((string) \MHz\MysqlVector\VectorTable::MAX_DIMENSIONS, $msg);
         }
+    }
+
+    public function testSelectByMetadata(): void {
+        // Create table with JSON path indexes for content_type and content_id
+        $tableName = 'select_by_metadata_test';
+        $vectorTable = new \MHz\MysqlVector\VectorTable(self::$mysqli, $tableName . '_' . uniqid(), $this->dimension);
+        $vectorTable->initializeTables(['$.content_type' => 'ENUM("pdf","doc","txt","html")', '$.content_id' => 'INT']);
+        $this->vectorTables[$vectorTable->getVectorTableName()] = $vectorTable;
+        $vectorTable->getConnection()->begin_transaction();
+        // Insert vectors with metadata
+        $ids = [];
+        $ids[] = $vectorTable->upsert(array_fill(0, $this->dimension, 0.1), ['content_type' => 'pdf', 'content_id' => 456, 'chunk_hash' => 'abc']);
+        $ids[] = $vectorTable->upsert(array_fill(0, $this->dimension, 0.2), ['content_type' => 'pdf', 'content_id' => 123, 'chunk_hash' => null]);
+        $ids[] = $vectorTable->upsert(array_fill(0, $this->dimension, 0.3), ['content_type' => 'html', 'content_id' => 456]);
+        $ids[] = $vectorTable->upsert(array_fill(0, $this->dimension, 0.4), null); // null metadata
+        // AND of equality - content_type='pdf' AND content_id=456 (should use indexes)
+        $rows = $vectorTable->selectByMetadata(['$.content_type' => 'pdf', '$.content_id' => 456]);
+        $this->assertCount(1, $rows);
+        $this->assertEquals('pdf', $rows[0]['metadata']['content_type']);
+        $this->assertEquals(456, $rows[0]['metadata']['content_id']);
+        // Null equality semantics: JSON path => null matches:
+        // 1) explicit JSON null for the path
+        // 2) missing path in metadata object
+        // 3) entire metadata column is NULL
+        $rows = $vectorTable->selectByMetadata(['$.chunk_hash' => null]);
+        $this->assertCount(3, $rows);
+        $this->assertArrayHasKey('chunk_hash', $rows[0]['metadata']);
+        $this->assertNull($rows[0]['metadata']['chunk_hash']);
+        $vectorTable->getConnection()->rollback();
+    }
+
+    public function testSelectByMetadata_UsesExistingIndexesWithNewInstance(): void {
+        // First create a table and add indexes
+        $namePrefix = 'select_by_metadata_existing_idx';
+        $tableWithIdx = new \MHz\MysqlVector\VectorTable(self::$mysqli, $namePrefix . '_' . uniqid(), $this->dimension);
+        $tableWithIdx->initializeTables(['$.content_type' => 'ENUM("pdf","doc","txt","html")', '$.content_id' => 'INT']);
+        $this->vectorTables[$tableWithIdx->getVectorTableName()] = $tableWithIdx;
+        // Insert a few rows
+        $tableWithIdx->upsert(array_fill(0, $this->dimension, 0.1), ['content_type' => 'pdf', 'content_id' => 111]);
+        $tableWithIdx->upsert(array_fill(0, $this->dimension, 0.2), ['content_type' => 'html', 'content_id' => 222]);
+        // Create a new instance pointing to the same underlying table WITHOUT calling initializeTables again
+        $tableName = $tableWithIdx->getVectorTableName();
+        $existingInstance = new \MHz\MysqlVector\VectorTable(self::$mysqli, str_replace('_vectors','',$tableName), $this->dimension);
+        // Query using shorthand AND conditions (should detect and use existing indexes)
+        $rows = $existingInstance->selectByMetadata(['$.content_type' => 'pdf', '$.content_id' => 111]);
+        $this->assertCount(1, $rows);
+        $this->assertEquals('pdf', $rows[0]['metadata']['content_type']);
+        $this->assertEquals(111, $rows[0]['metadata']['content_id']);
+    }
+
+    public function testDetectPrimitiveTypeMappings(): void {
+        $vt = new \MHz\MysqlVector\VectorTable(self::$mysqli, 'detect_primitive', 16);
+        $ref = new \ReflectionMethod(\MHz\MysqlVector\VectorTable::class, 'detectPrimitiveType');
+        $ref->setAccessible(true);
+
+        // string-like
+        $this->assertEquals('string', $ref->invoke($vt, 'char(10)'));
+        $this->assertEquals('string', $ref->invoke($vt, ' VARCHAR(191) '));
+        $this->assertEquals('string', $ref->invoke($vt, 'text'));
+        $this->assertEquals('string', $ref->invoke($vt, 'tinytext'));
+        $this->assertEquals('string', $ref->invoke($vt, 'mediumtext'));
+        $this->assertEquals('string', $ref->invoke($vt, 'longtext'));
+        $this->assertEquals('string', $ref->invoke($vt, "ENUM('A','B')"));
+        $this->assertEquals('string', $ref->invoke($vt, 'set("x","y")'));
+        $this->assertEquals('string', $ref->invoke($vt, 'date'));
+
+        // integer-like
+        $this->assertEquals('integer', $ref->invoke($vt, 'smallint'));
+        $this->assertEquals('integer', $ref->invoke($vt, 'mediumint'));
+        $this->assertEquals('integer', $ref->invoke($vt, 'int'));
+        $this->assertEquals('integer', $ref->invoke($vt, 'integer'));
+        $this->assertEquals('integer', $ref->invoke($vt, 'bigint'));
+        $this->assertEquals('integer', $ref->invoke($vt, 'tinyint(2)'));
+        $this->assertEquals('integer', $ref->invoke($vt, 'timestamp'));
+        $this->assertEquals('integer', $ref->invoke($vt, 'datetime'));
+
+        // float-like
+        $this->assertEquals('float', $ref->invoke($vt, 'decimal(10,2)'));
+        $this->assertEquals('float', $ref->invoke($vt, 'numeric(12,5)'));
+        $this->assertEquals('float', $ref->invoke($vt, 'float'));
+        $this->assertEquals('float', $ref->invoke($vt, 'double'));
+        $this->assertEquals('float', $ref->invoke($vt, ' real '));
+
+        // boolean
+        $this->assertEquals('boolean', $ref->invoke($vt, 'tinyint(1)'));
+    }
+
+    public function testTypedMetadataIndexingAndSelectByMetadata(): void {
+        $table = 'typed_meta_' . uniqid();
+        $vt = new \MHz\MysqlVector\VectorTable(self::$mysqli, $table, $this->dimension);
+        $vt->initializeTables([
+            '$.title' => 'VARCHAR(191)',
+            '$.category' => 'ENUM("A","B","C")',
+            '$.count' => 'INT',
+            '$.timestamp' => 'BIGINT',
+            '$.price' => 'DECIMAL(10,2)',
+            '$.rating' => 'FLOAT',
+            '$.active' => 'BOOLEAN'
+        ]);
+        $this->vectorTables[$vt->getVectorTableName()] = $vt;
+        $vt->getConnection()->begin_transaction();
+
+        // Insert a few rows with typed metadata
+        $id1 = $vt->upsert(array_fill(0, $this->dimension, 0.01), [
+            'title' => 'Doc 1', 'category' => 'A', 'count' => 10, 'timestamp' => 1700000000,
+            'price' => 12.34, 'rating' => 4.5, 'active' => true
+        ]);
+        $id2 = $vt->upsert(array_fill(0, $this->dimension, 0.02), [
+            'title' => 'Doc 2', 'category' => 'B', 'count' => 20, 'timestamp' => 1700000100,
+            'price' => 99.99, 'rating' => 3.0, 'active' => false
+        ]);
+        $id3 = $vt->upsert(array_fill(0, $this->dimension, 0.03), [
+            'title' => 'Doc 3', 'category' => 'C', 'count' => 30, 'timestamp' => 1700000200,
+            'price' => 7.00, 'rating' => 2.25, 'active' => true
+        ]);
+
+        // Indexed string
+        $r = $vt->selectByMetadata(['$.title' => 'Doc 1']);
+        $this->assertCount(1, $r);
+        $this->assertEquals('Doc 1', $r[0]['metadata']['title']);
+        // Indexed enum (string)
+        $r = $vt->selectByMetadata(['$.category' => 'B']);
+        $this->assertCount(1, $r);
+        $this->assertEquals('B', $r[0]['metadata']['category']);
+        // Indexed integer
+        $r = $vt->selectByMetadata(['$.count' => 20]);
+        $this->assertCount(1, $r);
+        $this->assertEquals(20, $r[0]['metadata']['count']);
+        // Integer type validation should reject non-numeric string
+        try {
+            $vt->selectByMetadata(['$.count' => 'abc']);
+            $this->fail('Expected InvalidArgumentException for non-numeric integer value');
+        } catch (\InvalidArgumentException $e) {}
+        // Indexed bigint
+        $r = $vt->selectByMetadata(['$.timestamp' => 1700000100]);
+        $this->assertCount(1, $r);
+        // Indexed decimal (float primitive) – allow numeric string
+        $r = $vt->selectByMetadata(['$.price' => '99.99']);
+        $this->assertCount(1, $r);
+        $this->assertEquals(99.99, (float)$r[0]['metadata']['price']);
+        // Indexed float
+        $r = $vt->selectByMetadata(['$.rating' => 3.0]);
+        $this->assertCount(1, $r);
+        // Indexed boolean stored as BOOLEAN (TINYINT(1)) – query with PHP booleans
+        $r = $vt->selectByMetadata(['$.active' => true]);
+        $this->assertCount(2, $r); // id1 and id3
+        $r = $vt->selectByMetadata(['$.active' => false]);
+        $this->assertCount(1, $r); // id2
+
+        // getMetadataIndexMap returns typed entries with primitive_type
+        $refMap = new \ReflectionMethod(\MHz\MysqlVector\VectorTable::class, 'getMetadataIndexMap');
+        $refMap->setAccessible(true);
+        $map = $refMap->invoke($vt);
+        $this->assertEquals('string', $map['$.title']['primitive_type']);
+        $this->assertEquals('string', $map['$.category']['primitive_type']);
+        $this->assertEquals('integer', $map['$.count']['primitive_type']);
+        $this->assertEquals('integer', $map['$.timestamp']['primitive_type']);
+        $this->assertEquals('float', $map['$.price']['primitive_type']);
+        $this->assertEquals('float', $map['$.rating']['primitive_type']);
+        $this->assertEquals('boolean', $map['$.active']['primitive_type']);
+
+        // Fallback (non-indexed) path should work with JSON typing
+        $r = $vt->selectByMetadata(['$.non_indexed' => 'foo']);
+        $this->assertIsArray($r); // no error; likely empty set
+
+        $vt->getConnection()->rollback();
+    }
+
+    public function testSelectByMetadata_FallbackJsonExtractTyping(): void
+    {
+        $table = 'fallback_meta_' . uniqid();
+        $vt = new \MHz\MysqlVector\VectorTable(self::$mysqli, $table, $this->dimension);
+        // No indexes for the fields we will query to force fallback
+        $vt->initializeTables();
+        $this->vectorTables[$vt->getVectorTableName()] = $vt;
+        $vt->getConnection()->begin_transaction();
+
+        // Insert rows with non-indexed metadata
+        $vt->upsert(array_fill(0, $this->dimension, 0.11), [
+            'name' => 'Alice', 'score' => 42, 'price' => 12.5, 'active' => true, 'null_field' => null
+        ]);
+        $vt->upsert(array_fill(0, $this->dimension, 0.12), [
+            'name' => 'Bob', 'score' => 7, 'price' => 3.14, 'active' => false
+        ]);
+        $vt->upsert(array_fill(0, $this->dimension, 0.13), [
+            'name' => 'Carol', 'score' => 42, 'price' => 12.5
+        ]); // missing null_field, active
+
+        // String equality
+        $r = $vt->selectByMetadata(['$.name' => 'Alice']);
+        $this->assertCount(1, $r);
+        // Integer equality
+        $r = $vt->selectByMetadata(['$.score' => 42]);
+        $this->assertCount(2, $r); // Alice and Carol
+        // Float equality (ensure numeric literal used)
+        $r = $vt->selectByMetadata(['$.price' => 12.5]);
+        $this->assertCount(2, $r); // Alice and Carol
+        // Boolean equality
+        $r = $vt->selectByMetadata(['$.active' => true]);
+        $this->assertCount(1, $r); // Alice
+        $r = $vt->selectByMetadata(['$.active' => false]);
+        $this->assertCount(1, $r); // Bob
+        // Null semantics: matches explicit null, missing path, and metadata NULL (none here)
+        $r = $vt->selectByMetadata(['$.null_field' => null]);
+        $this->assertCount(3, $r); // Alice (explicit null) + Bob (missing) + Carol (missing)
+
+        $vt->getConnection()->rollback();
     }
 }

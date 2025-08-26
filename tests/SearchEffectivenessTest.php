@@ -59,7 +59,6 @@ class SearchEffectivenessTest extends BaseVectorTest
     private int $vectorDimension = 3072;
 
     // Test data storage
-    private array $vectorTableId2testDataIndex = [];
     private array $testData = [];
     private array $categorizedVectors = [];
 
@@ -160,32 +159,6 @@ class SearchEffectivenessTest extends BaseVectorTest
     }
 
     /**
-     * Get a single vector entry by its array index
-     * Direct O(1) access instead of searching
-     */
-    private function getVectorByIndex(int $index): ?array
-    {
-        $testData = $this->getTestData();
-        return $testData[$index] ?? null;
-    }
-
-    /**
-     * Get vector entry by database table ID
-     *
-     * @param int $vectorId Database table ID
-     * @return array|null Full vector entry or null if not found
-     */
-    private function getVectorByTableId(int $vectorId): ?array
-    {
-        if (!isset($this->vectorTableId2testDataIndex[$vectorId])) {
-            return null;
-        }
-
-        $testDataIndex = $this->vectorTableId2testDataIndex[$vectorId];
-        return $this->getVectorByIndex($testDataIndex);
-    }
-
-    /**
      * Get all available semantic categories from the loaded data
      * Returns array of category names sorted alphabetically
      */
@@ -214,12 +187,21 @@ class SearchEffectivenessTest extends BaseVectorTest
         $vectorTable->getConnection()->begin_transaction();
 
         try {
+            $items = [];
             foreach ($testEntries as $index => $entry) {
-                $vectorId = $vectorTable->upsert($entry['vector']);
-
-                // Store simple mapping: database table ID → test data index
-                $this->vectorTableId2testDataIndex[$vectorId] = $index;
+                $items[] = [
+                    'vector' => $entry['vector'],
+                    'metadata' => [
+                        'test_index' => $index,
+                        'semantic_category' => $entry['semantic_category'],
+                        'text' => $entry['text'],
+                        'usage' => $entry['usage'] ?? []
+                    ],
+                ];
             }
+
+            // Store vectors with metadata in a single batch
+            $vectorTable->batchInsert($items);
 
             $vectorTable->getConnection()->commit();
             echo "Successfully stored " . count($testEntries) . " vectors.\n";
@@ -227,7 +209,6 @@ class SearchEffectivenessTest extends BaseVectorTest
 
         } catch (\Exception $e) {
             $vectorTable->getConnection()->rollback();
-            $this->vectorTableId2testDataIndex = [];
             throw new \Exception("Failed to store vectors: " . $e->getMessage());
         }
     }
@@ -239,9 +220,6 @@ class SearchEffectivenessTest extends BaseVectorTest
      */
     private function cleanupVectorData(VectorTable $vectorTable): void
     {
-        // Reset tracking array
-        $this->vectorTableId2testDataIndex = [];
-
         // Clear all vectors from the test table
         $tableName = $vectorTable->getVectorTableName();
         $result = $vectorTable->getConnection()->query("DELETE FROM `$tableName`");
@@ -315,13 +293,20 @@ class SearchEffectivenessTest extends BaseVectorTest
 
             $foundMatches = 0;
             foreach (array_slice($results, 0, 5) as $index => $result) {
-                $vectorEntry = $this->getVectorByTableId($result['id']);
-                $text = $vectorEntry ? $vectorEntry['text'] : 'Unknown';
+                $this->assertIsArray($result, "Search result item must be array");
+                $this->assertArrayHasKey('similarity', $result, "Search result missing 'similarity'");
+                $meta = $result['metadata'] ?? null;
+                $this->assertIsArray($meta, "Search result missing metadata");
+                $this->assertArrayHasKey('semantic_category', $meta, "Search result metadata missing 'semantic_category'");
+                $this->assertArrayHasKey('text', $meta, "Search result metadata missing 'text'");
+                $category = $meta['semantic_category'];
+                $text = (string)$meta['text'];
+
                 $similarity = $result['similarity'];
-                echo "    " . ($index + 1) . ". [" . number_format($similarity, 4) . "] " . substr($text, 0, 60) . "...\n";
+                echo "    " . ($index + 1) . ". [" . number_format($similarity, 4) . "] " . substr($text, 0, 60) . "... category=" . (string)$category . "\n";
 
                 // Check if this result matches expected categories
-                if ($vectorEntry && in_array($vectorEntry['semantic_category'], $testCase['expected_categories'])) {
+                if ($category && in_array($category, $testCase['expected_categories'])) {
                     $foundMatches++;
                 }
             }
