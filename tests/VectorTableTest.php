@@ -80,7 +80,16 @@ class VectorTableTest extends BaseVectorTest
         $this->assertCount(1, $r);
         // Verify that the stored vector matches what the normalize() method would produce
         $expectedNormalized = $vectorTable->normalize($newVec);
-        $actualStored = $r[0]['normalized_vector'];
+        // Fetch normalized_vector directly from the database and decode
+        $tableName = $vectorTable->getVectorTableName();
+        $stmt = self::$mysqli->prepare("SELECT normalized_vector FROM `$tableName` WHERE id = ?");
+        $this->assertNotFalse($stmt, "Failed to prepare statement to fetch normalized_vector");
+        $stmt->bind_param('i', $id);
+        $stmt->execute();
+        $stmt->bind_result($blob);
+        $this->assertTrue($stmt->fetch(), "Failed to fetch normalized_vector for id=$id");
+        $stmt->close();
+        $actualStored = $vectorTable->blobToVector($blob);
         // Stored vectors are encoded as float32; allow slightly larger tolerance
         $this->assertEqualsWithDelta($expectedNormalized, $actualStored, 1e-6, "Stored vector should match normalized() within float32 precision");
 
@@ -118,14 +127,10 @@ class VectorTableTest extends BaseVectorTest
         $results = $vectorTable->selectAll();
         $this->assertSameSize($vecs, $results);
 
-        $i = 0;
+        // Results should include only id and metadata
         foreach ($results as $result) {
-            // Verify that each stored vector matches what the normalize() method would produce
-            $expectedNormalized = $vectorTable->normalize($vecs[$i]);
-            $actualStored = $result['normalized_vector'];
-            // Stored vectors are encoded as float32; allow slightly larger tolerance
-            $this->assertEqualsWithDelta($expectedNormalized, $actualStored, 1e-6, "Each stored vector should match normalized() within float32 precision");
-            $i++;
+            $this->assertArrayHasKey('id', $result);
+            $this->assertArrayHasKey('metadata', $result);
         }
 
         $vectorTable->getConnection()->rollback();

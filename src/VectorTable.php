@@ -603,15 +603,13 @@ class VectorTable
      * @param array $ids The ids of the vectors to select
      * @return array Array of results, each containing:
      *               - 'id' (int)
-     *               - 'normalized_vector' (array<float>)
-     *               - 'binary_code' (string)
      *               - 'metadata' (array|null)
      */
     public function select(array $ids): array {
 
         $placeholders = implode(', ', array_fill(0, count($ids), '?'));
         $escapedVectorTableName = $this->escapeIdentifier($this->getVectorTableName());
-        $statement = $this->mysqli->prepare("SELECT id, normalized_vector, binary_code, metadata FROM {$escapedVectorTableName} WHERE id IN ({$placeholders})");
+        $statement = $this->mysqli->prepare("SELECT id, metadata FROM {$escapedVectorTableName} WHERE id IN ({$placeholders})");
         if (!$statement) {
             throw new \Exception($this->mysqli->error);
         }
@@ -629,15 +627,13 @@ class VectorTable
             if (!$statement->execute()) {
                 throw new \Exception("Execute failed: " . $statement->error);
             }
-            $statement->bind_result($vectorId, $normalizedVectorBlob, $binaryCode, $metadataJson);
+            $statement->bind_result($vectorId, $metadataJson);
 
             $result = [];
             while ($statement->fetch()) {
                 $result[] = [
                     'id' => $vectorId,
-                    'normalized_vector' => $this->blobToVector($normalizedVectorBlob),
-                    'binary_code' => $binaryCode,
-                    'metadata' => is_null( $metadataJson ) ? null : json_decode($metadataJson, true),
+                    'metadata' => is_null($metadataJson) ? null : json_decode($metadataJson, true),
                 ];
             }
         } finally {
@@ -651,14 +647,12 @@ class VectorTable
      * Select all vectors in the table
      * @return array Array of results, each containing:
      *               - 'id' (int)
-     *               - 'normalized_vector' (array<float>)
-     *               - 'binary_code' (string)
      *               - 'metadata' (array|null)
      */
     public function selectAll(): array {
 
         $escapedVectorTableName = $this->escapeIdentifier($this->getVectorTableName());
-        $statement = $this->mysqli->prepare("SELECT id, normalized_vector, binary_code, metadata FROM {$escapedVectorTableName}");
+        $statement = $this->mysqli->prepare("SELECT id, metadata FROM {$escapedVectorTableName}");
 
         if (!$statement) {
             throw new \Exception($this->mysqli->error);
@@ -668,15 +662,13 @@ class VectorTable
             if (!$statement->execute()) {
                 throw new \Exception("Execute failed: " . $statement->error);
             }
-            $statement->bind_result($vectorId, $normalizedVectorBlob, $binaryCode, $metadataJson);
+            $statement->bind_result($vectorId, $metadataJson);
 
             $result = [];
             while ($statement->fetch()) {
                 $result[] = [
                     'id' => $vectorId,
-                    'normalized_vector' => $this->blobToVector($normalizedVectorBlob),
-                    'binary_code' => $binaryCode,
-                    'metadata' => is_null( $metadataJson ) ? null : json_decode($metadataJson, true),
+                    'metadata' => is_null($metadataJson) ? null : json_decode($metadataJson, true),
                 ];
             }
         } finally {
@@ -705,8 +697,6 @@ class VectorTable
      * @param int|null $limit Optional LIMIT
      * @return array Array of results, each containing:
      *               - 'id' (int)
-     *               - 'normalized_vector' (array<float>)
-     *               - 'binary_code' (string)
      *               - 'metadata' (array|null)
      * @throws \Exception on SQL preparation/errors or invalid input
      */
@@ -796,7 +786,7 @@ class VectorTable
         }
 
         $where = implode(' AND ', $clauses);
-        $sql = "SELECT id, normalized_vector, binary_code, metadata FROM {$escapedTableName} WHERE {$where}";
+        $sql = "SELECT id, metadata FROM {$escapedTableName} WHERE {$where}";
         $useLimit = $limit !== null && $limit > 0;
         if ($useLimit) {
             $sql .= ' LIMIT ?';
@@ -817,13 +807,11 @@ class VectorTable
             if (!$stmt->execute()) {
                 throw new \Exception("Execute failed: " . $stmt->error);
             }
-            $stmt->bind_result($vectorId, $normalizedVectorBlob, $binaryCode, $metadataJson);
+            $stmt->bind_result($vectorId, $metadataJson);
             $result = [];
             while ($stmt->fetch()) {
                 $result[] = [
                     'id' => $vectorId,
-                    'normalized_vector' => $this->blobToVector($normalizedVectorBlob),
-                    'binary_code' => $binaryCode,
                     'metadata' => is_null($metadataJson) ? null : json_decode($metadataJson, true),
                 ];
             }
