@@ -1,0 +1,14 @@
+# Exclude development and CI files from Composer/Packagist dist archives
+# Packagist uses GitHub/GitLab zip (git archive) which honors export-ignore
+
+/tests                export-ignore
+/.ddev                export-ignore
+/vendor               export-ignore
+
+# Tooling/config
+/.editorconfig        export-ignore
+/.gitignore           export-ignore
+/.gitattributes       export-ignore
+
+# Lock file is not needed by consumers of a library
+/composer.lock         export-ignore

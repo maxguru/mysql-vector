@@ -31,5 +31,16 @@
   },
   "scripts": {
       "test": "phpunit tests"
+  },
+  "archive": {
+    "exclude": [
+      "/tests",
+      "/.ddev",
+      "/vendor",
+      "/.editorconfig",
+      "/.gitignore",
+      "/.gitattributes",
+      "/composer.lock"
+    ]
   }
 }
