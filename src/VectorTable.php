@@ -883,51 +883,70 @@ class VectorTable
         $queryVector = $this->normalize($vector);
         $binaryCode = $this->vectorToHex($queryVector);
 
-        // Fetch top-N candidates by Hamming distance with ONLY the data needed for re-ranking
-        $sql = "
-        SELECT id, normalized_vector
-        FROM {$escapedTableName}
-        ORDER BY BIT_COUNT(binary_code ^ UNHEX(?))
-        LIMIT ?";
-
+        // Fetch top-N candidate IDs by Hamming distance (minimize I/O during filesort by keeping buffer size small)
+        $sql = "SELECT id FROM {$escapedTableName} ORDER BY BIT_COUNT(binary_code ^ UNHEX(?)) LIMIT ?";
         $statement = $this->mysqli->prepare($sql);
         if (!$statement) {
             throw new \Exception("Failed to prepare search query: " . $this->mysqli->error);
         }
-
         $statement->bind_param('si', $binaryCode, $n);
         $statement->execute();
-        $statement->bind_result($id, $normalizedVectorBlob);
-
-        $results = [];
+        $statement->bind_result($candidateId);
+        $candidateIds = [];
         while ($statement->fetch()) {
-            $candidateVec = $this->blobToVector($normalizedVectorBlob);
-            $results[] = [
-                'id' => $id,
-                'similarity' => $this->dot($candidateVec, $queryVector), // compute similarity for PHP-side re-ranking
-            ];
+            $candidateIds[] = (int)$candidateId;
         }
         $statement->close();
 
-        if (empty($results)) {
+        // Avoid invalid SQL
+        if (empty($candidateIds)) {
             return [];
         }
 
+        // Fetch vectors only for those candidate IDs
+        $ids = [];
+        foreach ($candidateIds as $cid) { $ids[] = (int)$cid; }
+        $sqlVectors = "SELECT id, normalized_vector FROM {$escapedTableName} WHERE id IN (" . implode(',', $ids) . ")";
+        $stmtVectors = $this->mysqli->prepare($sqlVectors);
+        if (!$stmtVectors) {
+            throw new \Exception("Failed to prepare vector fetch query: " . $this->mysqli->error);
+        }
+        if (!$stmtVectors->execute()) {
+            $err = $stmtVectors->error;
+            $stmtVectors->close();
+            throw new \Exception("Execute failed: {$err}");
+        }
+        $stmtVectors->bind_result($vectorId, $normalizedVectorBlob);
+        $results = [];
+        while ($stmtVectors->fetch()) {
+            $vec = $this->blobToVector($normalizedVectorBlob);
+            $results[(int)$vectorId] = [
+                'id' => (int)$vectorId,
+                'similarity' => $this->dot($vec, $queryVector), // compute similarity for PHP-side re-ranking
+            ];
+        }
+        $stmtVectors->close();
+
         // PHP-side re-ranking
-        usort($results, static function($a, $b) {
+        uasort($results, static function($a, $b) {
             if ($a['similarity'] === $b['similarity']) return 0;
             return ($a['similarity'] < $b['similarity']) ? 1 : -1;
         });
 
         // Keep top-N vectors
         if (count($results) > $n) {
-            $results = array_slice($results, 0, $n);
+            $results = array_slice($results, 0, $n, true);
         }
 
-        // Fetch metadata for top-N only, in a single simple query using a numeric IN list
+        // Avoid invalid SQL
+        if (empty($results)) {
+            return [];
+        }
+
+        // Fetch metadata for top-N only
         $ids = [];
         foreach ($results as $r) { $ids[] = (int)$r['id']; }
-        $sqlMeta = "SELECT id, metadata FROM {$escapedTableName} WHERE id IN (" . implode(', ', $ids) . ")";
+        $sqlMeta = "SELECT id, metadata FROM {$escapedTableName} WHERE id IN (" . implode(',', $ids) . ")";
         $stmtMeta = $this->mysqli->prepare($sqlMeta);
         if (!$stmtMeta) {
             throw new \Exception("Failed to prepare metadata query: " . $this->mysqli->error);
@@ -938,19 +957,12 @@ class VectorTable
             throw new \Exception("Execute failed: {$err}");
         }
         $stmtMeta->bind_result($mid, $metadataJson);
-        $metaById = [];
         while ($stmtMeta->fetch()) {
-            $metaById[(int)$mid] = is_null($metadataJson) ? null : json_decode($metadataJson, true);
+            $results[(int)$mid]['metadata'] = is_null($metadataJson) ? null : json_decode($metadataJson, true);
         }
         $stmtMeta->close();
 
-        // Merge metadata into results
-        foreach ($results as &$row) {
-            $row['metadata'] = $metaById[(int)$row['id']] ?? null;
-        }
-        unset($row);
-
-        return $results;
+        return array_values($results);
     }
 
     /**
