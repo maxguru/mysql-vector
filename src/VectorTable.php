@@ -23,7 +23,7 @@ class VectorTable
      * @param \mysqli $mysqli The mysqli connection
      * @param string $name Name of the table.
      * @param int $dimension Dimension of the vectors.
-     * @param string $engine The storage engine to use for the tables
+     * @param string $engine The storage engine to use for the table
      * @throws \InvalidArgumentException If dimension exceeds maximum supported value
      */
     public function __construct(\mysqli $mysqli, string $name, int $dimension = 384, string $engine = 'InnoDB')
@@ -249,15 +249,15 @@ class VectorTable
     }
 
     /**
-     * Initialize the tables for this VectorTable instance
+     * Initialize the vector table for this instance
      * Optionally create generated columns and indexes for JSON metadata paths
-     * Fails if tables have already been created
+     * Fails if the table has already been created
      * @param array $metadataJsonPathIndexes Map of JSON paths to SQL types for generated columns and indexes.
      *        Example: ['$.content_type' => 'ENUM("pdf","doc","txt","html")', '$.content_id' => 'INT', '$.price' => 'DECIMAL(10,2)']
      * @return void
-     * @throws \Exception If the tables could not be created (e.g., table already exists)
+     * @throws \Exception If the table could not be created (e.g., table already exists)
      */
-    public function initializeTables(array $metadataJsonPathIndexes = []): void
+    public function initialize(array $metadataJsonPathIndexes = []): void
     {
         // Build all SQL statements for single multi-query execution with proper escaping
         $binaryCodeLengthInBytes = ceil($this->dimension / 8);
@@ -349,7 +349,7 @@ class VectorTable
         ";
 
         if (!$this->mysqli->multi_query($queries)) {
-            throw new \Exception("Failed to initialize tables: " . $this->mysqli->error);
+            throw new \Exception("Failed to initialize table: " . $this->mysqli->error);
         }
 
         // Clear all results from multi-query
@@ -357,18 +357,6 @@ class VectorTable
 
         // Cache index map
         $this->metadataIndexMap = $metadataIndexMap;
-    }
-
-    /**
-     * Create the tables required for storing vectors.
-     * Fails if already initialized (table exists)
-     * @return void
-     * @throws \Exception If the tables could not be created
-     */
-    public function initialize(): void
-    {
-        // Initialize tables (instance-specific)
-        $this->initializeTables();
     }
 
     /**
@@ -425,11 +413,11 @@ class VectorTable
     }
 
     /**
-     * Clean up tables for this VectorTable instance
+     * Clean up the vector table for this instance
      * @return void
      * @throws \Exception If cleanup fails
      */
-    public function deinitializeTables(): void
+    public function deinitialize(): void
     {
         // Drop table with proper escaping
         $escapedVectorTableName = $this->escapeIdentifier($this->getVectorTableName());
@@ -437,7 +425,7 @@ class VectorTable
         $queries = "DROP TABLE IF EXISTS {$escapedVectorTableName};";
 
         if (!$this->mysqli->multi_query($queries)) {
-            throw new \Exception("Failed to drop tables: " . $this->mysqli->error);
+            throw new \Exception("Failed to drop table: " . $this->mysqli->error);
         }
 
         // Clear all results from multi-query
@@ -445,17 +433,6 @@ class VectorTable
 
         // Invalidate cached index map
         $this->metadataIndexMap = null;
-    }
-
-    /**
-     * Complete cleanup of tables.
-     * @return void
-     * @throws \Exception If cleanup fails
-     */
-    public function deinitialize(): void
-    {
-        // Clean up tables
-        $this->deinitializeTables();
     }
 
     /**
@@ -862,8 +839,8 @@ class VectorTable
      * Find vectors most similar to the given query vector using two-stage search
      *
      * Uses a two-stage algorithm for efficient similarity search:
-     * 1. Stage 1: Binary quantization with Hamming distance for fast filtering
-     * 2. Stage 2: Precise cosine similarity re-ranking of candidates
+     * 1. Binary quantization with Hamming distance for fast filtering
+     * 2. Precise cosine similarity re-ranking of candidates
      *
      * @param array $vector Query vector to search for
      * @param int $n Maximum number of results to return (default: 10)

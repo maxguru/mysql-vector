@@ -372,7 +372,7 @@ class VectorTableTest extends BaseVectorTest
         // Create table with JSON path indexes for content_type and content_id
         $tableName = 'select_by_metadata_test';
         $vectorTable = new \MHz\MysqlVector\VectorTable(self::$mysqli, $tableName . '_' . uniqid(), $this->dimension);
-        $vectorTable->initializeTables(['$.content_type' => 'ENUM("pdf","doc","txt","html")', '$.content_id' => 'INT']);
+        $vectorTable->initialize(['$.content_type' => 'ENUM("pdf","doc","txt","html")', '$.content_id' => 'INT']);
         $this->vectorTables[$vectorTable->getVectorTableName()] = $vectorTable;
         $vectorTable->getConnection()->begin_transaction();
         // Insert vectors with metadata
@@ -401,7 +401,7 @@ class VectorTableTest extends BaseVectorTest
         // First create a table and add indexes
         $namePrefix = 'select_by_metadata_existing_idx';
         $tableWithIdx = new \MHz\MysqlVector\VectorTable(self::$mysqli, $namePrefix . '_' . uniqid(), $this->dimension);
-        $tableWithIdx->initializeTables(['$.content_type' => 'ENUM("pdf","doc","txt","html")', '$.content_id' => 'INT']);
+        $tableWithIdx->initialize(['$.content_type' => 'ENUM("pdf","doc","txt","html")', '$.content_id' => 'INT']);
         $this->vectorTables[$tableWithIdx->getVectorTableName()] = $tableWithIdx;
         // Insert a few rows
         $tableWithIdx->upsert(array_fill(0, $this->dimension, 0.1), ['content_type' => 'pdf', 'content_id' => 111]);
@@ -456,7 +456,7 @@ class VectorTableTest extends BaseVectorTest
     public function testTypedMetadataIndexingAndSelectByMetadata(): void {
         $table = 'typed_meta_' . uniqid();
         $vt = new \MHz\MysqlVector\VectorTable(self::$mysqli, $table, $this->dimension);
-        $vt->initializeTables([
+        $vt->initialize([
             '$.title' => 'VARCHAR(191)',
             '$.category' => 'ENUM("A","B","C")',
             '$.count' => 'INT',
@@ -539,7 +539,7 @@ class VectorTableTest extends BaseVectorTest
         $table = 'fallback_meta_' . uniqid();
         $vt = new \MHz\MysqlVector\VectorTable(self::$mysqli, $table, $this->dimension);
         // No indexes for the fields we will query to force fallback
-        $vt->initializeTables();
+        $vt->initialize();
         $this->vectorTables[$vt->getVectorTableName()] = $vt;
         $vt->getConnection()->begin_transaction();
 

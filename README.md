@@ -8,8 +8,8 @@ The library stores only **normalized vectors** in the database, which provides c
 
 ### Search Performance
 Vectors are binary quantized upon insertion into the database to optimize search speed and reranked to improve accuracy using a two-stage algorithm:
-1. **Stage 1**: Fast filtering using Hamming distance on binary quantized codes
-2. **Stage 2**: Precise re-ranking using cosine similarity (dot product) on normalized vectors
+1. Fast filtering using Hamming distance on binary quantized codes
+2. Precise re-ranking using cosine similarity (dot product) on normalized vectors
 
 This library is suitable for datasets up to 1,000,000 vectors. For larger datasets, consider using a dedicated vector database such as [Qdrant](https://qdrant.tech/).
 
@@ -31,7 +31,7 @@ Binary quantized codes are stored in the `binary_code` VARBINARY column. Storage
 Normalized vector storage uses VARBINARY(4 * dimension). MySQL's maximum VARBINARY length is 65,535 bytes, so the maximum supported dimension for float32 storage is floor(65,535 / 4) = 16,383. Binary quantized codes use VARBINARY(ceil(dimension/8)) for Stage 1 filtering. While this could theoretically support up to 524,280 bits, the effective limit is governed by the normalized vector storage (16,383 dimensions).
 
 ## Features
-- Management of database tables.
+- Management of the database vector table.
 - Support for multiple vector tables within a single database.
 - Vector operations: insertion, deletion, retrieval, and search by cosine similarity.
 - Support for high-dimensional vectors (up to 16,383 dimensions).
@@ -71,21 +71,23 @@ $vectorTable = new VectorTable($mysqli, $tableName, $dimension, $engine);
 The library provides flexible initialization options for different use cases:
 
 > Important
-> - Initialization methods will throw an exception if the target tables already exists.
-> - Ensure you use a unique base table name or clean up with deinitializeTables() before re-initializing.
+> - Initialization will throw an exception if the target table already exists.
+> - Ensure you use a unique base table name or clean up with deinitialize() before re-initializing.
 
 #### Complete Initialization
-The `initialize` method creates the vector table:
+The `initialize` method creates the vector table in the database:
 ```php
 $vectorTable->initialize();
 ```
 
-#### Granular Initialization
-For more control, you can initialize tables separately:
+#### Initialization with typed metadata indexes (optional)
+In order to use the metadata filtering capabilities efficiently, indexes on specific JSON paths need to be created.
+Typed generated columns and their indexes are created by passing a map of JSON paths to SQL types:
 ```php
-// Initialize tables for multiple vector tables
-$vectorTable1->initializeTables();
-$vectorTable2->initializeTables(['$.content_type' => 'ENUM("pdf","doc","txt","html")', '$.content_id' => 'INT']); // Typed JSON path indexes
+$vectorTable->initialize([
+    '$.content_type' => 'ENUM("pdf","doc","txt","html")',
+    '$.content_id'   => 'INT'
+]);
 ```
 
 The table schema includes:
@@ -93,14 +95,12 @@ The table schema includes:
 - `normalized_vector`: VARBINARY(4 * dimension) storing the L2-normalized vector in little-endian float32 format
 - `binary_code`: VARBINARY column storing the binary quantized representation for fast filtering
 - `metadata`: JSON column for optional per-vector metadata (NULL if absent)
+- `metadata_<JSON_PATH_DERIVED_NAME>`: Generated columns for each JSON path in the map passed to initialize(), with the specified SQL type
 
 #### Cleanup and Deinitialization
 The library provides comprehensive cleanup capabilities:
 ```php
-// Clean up tables for this VectorTable instance
-$vectorTable->deinitializeTables();
-
-// Complete cleanup (tables)
+// Clean up (drop) the table for this VectorTable instance
 $vectorTable->deinitialize();
 ```
 

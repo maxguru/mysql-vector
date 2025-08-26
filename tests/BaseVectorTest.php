@@ -43,7 +43,7 @@ abstract class BaseVectorTest extends TestCase
         $tempVectorTable = new VectorTable($connection, $tableName, $dimension);
 
         try {
-            $tempVectorTable->deinitializeTables();
+            $tempVectorTable->deinitialize();
         } catch (\Exception $e) {
             // Ignore errors during defensive cleanup
         }
@@ -96,7 +96,7 @@ abstract class BaseVectorTest extends TestCase
 
         // Create new VectorTable instance and initialize only tables (functions already initialized)
         $vectorTable = new VectorTable(self::$mysqli, $uniqueTableName, $dimension);
-        $vectorTable->initializeTables();
+        $vectorTable->initialize();
 
         // Store in array for automatic cleanup
         $this->vectorTables[$uniqueTableName] = $vectorTable;
@@ -115,7 +115,7 @@ abstract class BaseVectorTest extends TestCase
         foreach ($this->vectorTables as $vectorTable) {
             if ($vectorTable) {
                 try {
-                    $vectorTable->deinitializeTables();
+                    $vectorTable->deinitialize();
                 } catch (\Exception $e) {
                     // Log error but continue cleanup
                     error_log("Failed to cleanup VectorTable: " . $e->getMessage());
