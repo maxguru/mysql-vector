@@ -103,7 +103,7 @@ class PerformanceBenchmarkTest extends BaseVectorTest
             }
 
             echo "    Processing chunk: " . ($inserted + 1) . "-" . ($inserted + $remaining) . "/$count\n";
-            $vectorTable->batchInsert($chunk); // Efficient batch insert with optional metadata
+            $vectorTable->batchInsert($chunk); // Efficient batch insert
             $inserted += $remaining;
 
             // Force garbage collection and memory cleanup

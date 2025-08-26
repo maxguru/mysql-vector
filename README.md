@@ -34,7 +34,7 @@ Normalized vector storage uses VARBINARY(4 * dimension). MySQL's maximum VARBINA
 - Management of database tables.
 - Support for multiple vector tables within a single database.
 - Vector operations: insertion, deletion, retrieval, and search by cosine similarity.
-- Support for high-dimensional vectors (up to 16,383 dimensions for normalized vector storage).
+- Support for high-dimensional vectors (up to 16,383 dimensions).
 - Batch insert operations for efficient bulk vector storage.
 
 ## Requirements
@@ -158,7 +158,6 @@ $allVectors = $vectorTable->selectAll();
 $tableName = $vectorTable->getVectorTableName();
 $dimension = $vectorTable->getDimension();
 ```
-
 
 ## Contributions
 Contributions to this project are welcome. Please ensure that your code adheres to the existing coding standards and includes appropriate tests.
