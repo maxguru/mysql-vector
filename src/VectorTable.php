@@ -734,26 +734,39 @@ class VectorTable
                 }
             } else {
                 // Fallback to JSON_EXTRACT: infer JSON primitive from PHP type
+                $jx = "JSON_EXTRACT(metadata, ?)";
                 if ($value === null) {
-                    $clauses[] = "(JSON_EXTRACT(metadata, ?) IS NULL OR JSON_EXTRACT(metadata, ?) = CAST('null' AS JSON))";
+                    // Match explicit JSON null, missing path, or metadata NULL
+                    $clauses[] = "($jx IS NULL OR JSON_TYPE($jx) = 'NULL')";
                     $params[] = $path; $types .= 's';
                     $params[] = $path; $types .= 's';
                 } else {
-                    // Map PHP types to JSON primitives
+                    $ju = "JSON_UNQUOTE($jx)";
                     if (is_int($value)) {
-                        $json = (string)$value;
+                        $clauses[] = "CAST($ju AS SIGNED) = ?";
+                        $params[] = $path; $types .= 's';
+                        $params[] = (int)$value; $types .= 'i';
                     } elseif (is_float($value)) {
-                        $json = (string)+$value;
+                        // Fixed-scale DECIMAL equality to avoid DOUBLE exact-equality pitfalls
+                        $precision = 38; $scale = 12; // reasonable default
+                        $decStr = rtrim(rtrim(sprintf('%.12F', $value), '0'), '.');
+                        $clauses[] = "CAST($ju AS DECIMAL({$precision},{$scale})) = CAST(? AS DECIMAL({$precision},{$scale}))";
+                        $params[] = $path; $types .= 's';
+                        $params[] = $decStr; $types .= 's';
                     } elseif (is_bool($value)) {
-                        $json = $value ? 'true' : 'false';
+                        $clauses[] = "(CASE $jx WHEN true THEN 1 WHEN false THEN 0 ELSE CAST($ju AS SIGNED) END) = ?";
+                        $params[] = $path; $types .= 's';
+                        $params[] = $path; $types .= 's';
+                        $params[] = ($value ? 1 : 0); $types .= 'i';
                     } elseif (is_string($value)) {
-                        $json = json_encode($value);
+                        $clauses[] = "$ju = ?";
+                        $params[] = $path; $types .= 's';
+                        $params[] = $value; $types .= 's';
                     } else {
-                        $json = json_encode((string)$value);
+                        $clauses[] = "$ju = ?";
+                        $params[] = $path; $types .= 's';
+                        $params[] = (string)$value; $types .= 's';
                     }
-                    $clauses[] = "JSON_EXTRACT(metadata, ?) = CAST(? AS JSON)";
-                    $params[] = $path; $types .= 's';
-                    $params[] = $json; $types .= 's';
                 }
             }
         }
