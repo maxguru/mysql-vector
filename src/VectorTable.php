@@ -175,7 +175,7 @@ class VectorTable
         $tableName = $this->getVectorTableName();
         $sql = "SELECT COLUMN_NAME, COLUMN_TYPE, GENERATION_EXPRESSION
                 FROM INFORMATION_SCHEMA.COLUMNS
-                WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = ? AND COLUMN_NAME LIKE 'meta\\_%'";
+                WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = ? AND COLUMN_NAME LIKE 'metadata\\_%'";
         $stmt = $this->mysqli->prepare($sql);
         if ($stmt) {
             $stmt->bind_param('s', $tableName);
