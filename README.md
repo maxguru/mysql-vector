@@ -58,7 +58,6 @@ Import the `VectorTable` class and create a new instance using the MySQLi connec
 ```php
 use MHz\MysqlVector\VectorTable;
 
-
 $mysqli = new mysqli("hostname", "username", "password", "database");
 $tableName = "my_vector_table";
 $dimension = 384;
@@ -95,7 +94,7 @@ The table schema includes:
 - `normalized_vector`: VARBINARY(4 * dimension) storing the L2-normalized vector in little-endian float32 format
 - `binary_code`: VARBINARY column storing the binary quantized representation for fast filtering
 - `metadata`: JSON column for optional per-vector metadata (NULL if absent)
-- `metadata_<JSON_PATH_DERIVED_NAME>`: Generated columns for each JSON path in the map passed to initialize(), with the specified SQL type
+- `metadata_<JSON_PATH_DERIVED_NAME>`: Generated columns for each JSON path in the map passed to initialize(), with the specified SQL type, used for indexed filtering
 
 #### Cleanup and Deinitialization
 The library provides comprehensive cleanup capabilities:
