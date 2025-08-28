@@ -216,5 +216,13 @@ The following features are planned for future releases:
    - What: Expand metadata querying with composite index support and a richer, type‑aware query builder for complex filters (e.g., nested AND/OR, IN/LIKE, numeric ranges).
    - Why: Delivers faster, more expressive filtering over JSON metadata, improving relevance and performance for applications with nuanced search requirements.
 
+
+### Sponsors
+If you find this library useful and would like to see the roadmap delivered faster, please consider sponsoring the developers of the library. Your support is greatly appreciated.
+
+Alex R.:
+- GitHub Sponsors: https://github.com/sponsors/maxguru
+- Liberapay: https://liberapay.com/maxguru
+
 ## License
 MIT License
