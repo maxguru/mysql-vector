@@ -3,6 +3,7 @@
 
 /tests                export-ignore
 /.ddev                export-ignore
+/.github              export-ignore
 /vendor               export-ignore
 
 # Tooling/config

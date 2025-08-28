@@ -46,6 +46,7 @@
     "exclude": [
       "/tests",
       "/.ddev",
+      "/.github",
       "/vendor",
       "/.editorconfig",
       "/.gitignore",
