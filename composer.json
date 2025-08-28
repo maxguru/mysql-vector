@@ -1,9 +1,9 @@
 {
-  "name": "allanpichardo/mysql-vector",
+  "name": "maxguru/mysql-vector",
   "description": "Perform vector operations natively on MySQL",
   "type": "library",
   "license": "MIT",
-  "version": "2.0.4",
+  "version": "3.0.0",
   "authors": [
     {
       "name": "Alex R.",
