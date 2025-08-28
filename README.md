@@ -16,11 +16,11 @@ This library is suitable for datasets up to 1,000,000 vectors. For larger datase
 Search Benchmarks (384-dimensional vectors):
 Vectors | Time (seconds)
 --------|---------------
-100     | 0.0014
-1000    | 0.0023
-10000   | 0.0083
-100000  | 0.0624
-1000000 | 1.4193
+100     | 0.0045
+1000    | 0.0048
+10000   | 0.0102
+100000  | 0.0641
+1000000 | 1.5224
 
 ## Storage Efficiency
 Normalized vectors are stored as 32-bit IEEE-754 floats (float32) in little-endian order inside the `normalized_vector` VARBINARY column. Round-trip encoding/decoding to and from binary can introduce very small precision differences compared to 64-bit doubles; typical tolerances are around 1e-6 when comparing vectors after storage/retrieval. This precision is sufficient for cosine-similarity/dot-product ranking in typical embedding-based applications and allows significantly smaller storage and better performance than 64-bit doubles. Storing 4 bytes per dimension (instead of 8 bytes) allows 2x higher limit on dimensions and halves storage and network costs, which improves performance for insert, read, and re-ranking, while still maintaining sufficient accuracy for similarity search purposes.
@@ -139,9 +139,21 @@ $similarity = $vectorTable->cosim($vector1, $vector2);
 
 ### Searching for Similar Vectors
 Perform a search for vectors similar to a given vector using the two-stage cosine similarity algorithm. The `topN` parameter specifies the maximum number of similar vectors to return.
+
+The library uses adaptive candidate selection for Stage‑1 (Hamming distance) filtering. By default, the candidate pool size is chosen based on the requested `topN` via:
+
+- candidateMultiplier = max(3, min(20, ceil(100 / topN)))
+- candidateLimit = topN * candidateMultiplier
+
+This favors accuracy for small result sets (larger candidate pools) and efficiency for larger result sets (smaller multipliers). You can override this behavior by providing a custom multiplier.
+
 ```php
-// Find vectors similar to a given vector
+// Default adaptive candidate selection
 $similarVectors = $vectorTable->search($vector, $topN);
+
+// Manual override: force a specific candidate multiplier
+// Using 1 disables the adaptive expansion and uses exactly topN candidates in Stage‑1
+$similarVectors = $vectorTable->search($vector, $topN, 1);
 
 // Results include:
 // - 'id': Vector ID

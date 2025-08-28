@@ -857,13 +857,20 @@ class VectorTable
      *
      * @param array $vector Query vector to search for
      * @param int $n Maximum number of results to return (default: 10)
+     * @param int|null $candidateMultiplier Optional multiplier for Stage 1 filtering accuracy.
+     *                                      When null (default), uses adaptive formula based on result count:
+     *                                      - Small result sets (n=1-5): 20x multiplier for maximum accuracy
+     *                                      - Medium result sets (n=6-33): 3-20x adaptive multiplier
+     *                                      - Large result sets (n>33): 3x minimum multiplier for efficiency
+     *                                      This balances accuracy vs performance. When provided, uses the
+     *                                      specified multiplier directly. Must be positive.
      * @return array Array of results, each containing:
      *               - 'id': Vector ID
      *               - 'similarity': Cosine similarity [-1, 1]
      *               - 'metadata': Associated metadata (array|null)
      * @throws \Exception If database operations fail or invalid input
      */
-    public function search(array $vector, int $n = 10): array
+    public function search(array $vector, int $n = 10, ?int $candidateMultiplier = null): array
     {
         // Input validation
         if (empty($vector)) {
@@ -878,11 +885,21 @@ class VectorTable
             throw new \InvalidArgumentException("Number of results must be positive");
         }
 
+        if ($candidateMultiplier !== null && $candidateMultiplier <= 0) {
+            throw new \InvalidArgumentException("Candidate multiplier must be positive when provided");
+        }
+
         $escapedTableName = $this->escapeIdentifier($this->getVectorTableName());
         $queryVector = $this->normalize($vector);
         $binaryCode = $this->vectorToHex($queryVector);
 
-        // Fetch top-N candidate IDs by Hamming distance (minimize I/O during filesort by keeping buffer size small)
+        // Determine candidate multiplier and limit
+        if ($candidateMultiplier === null) {
+            $candidateMultiplier = max(3, min(20, (int)ceil(100 / $n)));
+        }
+        $candidateLimit = $n * $candidateMultiplier;
+
+        // Fetch top candidate IDs by Hamming distance (minimize I/O during filesort by keeping buffer size small)
         $sql = "SELECT id FROM {$escapedTableName} ORDER BY BIT_COUNT(binary_code ^ UNHEX(?)) LIMIT ?";
         $statement = $this->mysqli->prepare($sql);
         if (!$statement) {
@@ -890,7 +907,7 @@ class VectorTable
         }
         $candidateIds = [];
         try {
-            $statement->bind_param('si', $binaryCode, $n);
+            $statement->bind_param('si', $binaryCode, $candidateLimit);
             if (!$statement->execute()) {
                 throw new \Exception("Execute failed: " . $statement->error);
             }
@@ -967,7 +984,6 @@ class VectorTable
         } finally {
             $stmtMeta->close();
         }
-
 
         return array_values($results);
     }
