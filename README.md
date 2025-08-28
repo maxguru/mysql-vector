@@ -202,5 +202,20 @@ To run the tests, use the following command:
 ddev composer test
 ```
 
+### Roadmap
+The following features are planned for future releases:
+
+1) MariaDB 11.7 VECTOR INDEX Support
+   - What: Integrate native vector indexing (HNSW) using [MariaDB 11.7's VECTOR INDEX feature](https://mariadb.com/docs/server/reference/sql-structure/vectors/vector-overview).
+   - Why: Leverages database-side graph search for faster similarity queries. The current two‑stage (Hamming filter + cosine re‑rank) path will remain as a compatible fallback for servers without native vector indexing.
+
+2) Schema Migration System
+   - What: Provide an automated, versioned migration system to update existing table schemas (columns, generated indexes) when upgrading library versions.
+   - Why: Enables seamless upgrades across library versions without manual steps or data loss, improving reliability and maintainability for production deployments.
+
+3) Enhanced Metadata Filtering
+   - What: Expand metadata querying with composite index support and a richer, type‑aware query builder for complex filters (e.g., nested AND/OR, IN/LIKE, numeric ranges).
+   - Why: Delivers faster, more expressive filtering over JSON metadata, improving relevance and performance for applications with nuanced search requirements.
+
 ## License
 MIT License
