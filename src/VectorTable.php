@@ -593,14 +593,7 @@ class VectorTable
 
         try {
             $types = str_repeat('i', count($ids));
-
-            $refs = [];
-            foreach ($ids as $key => &$id) {
-                $refs[$key] = &$id;
-            }
-            unset($id);
-
-            call_user_func_array([$statement, 'bind_param'], array_merge([$types], $refs));
+            $statement->bind_param($types, ...$ids);
             if (!$statement->execute()) {
                 throw new \Exception("Execute failed: " . $statement->error);
             }
