@@ -37,10 +37,20 @@
       }
   },
   "require-dev": {
-      "phpunit/phpunit": "^9.5"
+      "phpunit/phpunit": "^9.5",
+      "bartlett/php-compatinfo": "^7.2"
   },
   "scripts": {
-      "test": "phpunit tests"
+      "test": "phpunit tests",
+      "compatinfo": [
+        "mkdir -p vendor/.cache/php-compatinfo",
+        "[ -f vendor/.cache/php-compatinfo/compatinfo-db.sqlite ] || DATABASE_URL=\"sqlite:///$(pwd)/vendor/.cache/php-compatinfo/compatinfo-db.sqlite\" php -d memory_limit=1024M vendor/bin/phpcompatinfo db:new",
+        "DATABASE_URL=\"sqlite:///$(pwd)/vendor/.cache/php-compatinfo/compatinfo-db.sqlite\" vendor/bin/phpcompatinfo analyser:run src"
+      ],
+      "compatinfo:rebuild": [
+        "mkdir -p vendor/.cache/php-compatinfo",
+        "DATABASE_URL=\"sqlite:///$(pwd)/vendor/.cache/php-compatinfo/compatinfo-db.sqlite\" php -d memory_limit=1024M vendor/bin/phpcompatinfo db:new --force"
+      ]
   },
   "archive": {
     "exclude": [

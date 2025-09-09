@@ -218,6 +218,23 @@ To run the tests, use the following command:
 ddev composer test
 ```
 
+### PHP CompatInfo (compatibility analysis)
+
+Use PHP CompatInfo to run an analysis of the library:
+
+```bash
+composer compatinfo
+```
+
+- Initializes the php-compatinfo database at `vendor/.cache/php-compatinfo/compatinfo-db.sqlite` (first run only)
+- Runs the analyser on `src`
+
+If you need to rebuild the php-compatinfo database, use:
+
+```bash
+composer compatinfo:rebuild
+```
+
 ### Roadmap
 The following features are planned for future releases:
 
