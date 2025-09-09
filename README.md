@@ -135,6 +135,9 @@ $vectorTable->batchDelete([1, 2, 3]);
 
 // Delete vectors by metadata (AND of equality on JSON path values)
 $deletedCount = $vectorTable->deleteByMetadata(['$.content_type' => 'pdf', '$.content_id' => 123]);
+
+// Truncate the vector table (remove all rows and reset AUTO_INCREMENT)
+$vectorTable->truncate();
 ```
 
 ### Calculating Cosine Similarity

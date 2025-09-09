@@ -1318,6 +1318,19 @@ class VectorTable
         }
     }
 
+    /**
+     * Truncate the vector table, removing all rows and resetting AUTO_INCREMENT.
+     * @return void
+     * @throws \Exception If the operation fails
+     */
+    public function truncate(): void {
+        $escapedVectorTableName = $this->escapeIdentifier($this->getVectorTableName());
+        $sql = "TRUNCATE TABLE {$escapedVectorTableName}";
+        if (!$this->mysqli->query($sql)) {
+            throw new \Exception("Failed to truncate table: " . $this->mysqli->error);
+        }
+    }
+
     public function getConnection(): \mysqli {
         return $this->mysqli;
     }

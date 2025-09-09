@@ -1060,4 +1060,22 @@ class VectorTableTest extends BaseVectorTest
 
         $vt->getConnection()->rollback();
     }
+
+    public function testTruncate(): void {
+        $vt = $this->makeTable('truncate_test', $this->dimension);
+
+        // Insert a handful of vectors
+        foreach ($this->getRandomVectors(10, $this->dimension) as $v) {
+            $vt->upsert($v);
+        }
+        $this->assertEquals(10, $vt->count());
+
+        // Truncate the table and verify it is empty
+        $vt->truncate();
+        $this->assertEquals(0, $vt->count());
+
+        // Ensure subsequent inserts still work after truncate
+        $newId = $vt->upsert(array_fill(0, $this->dimension, 0.01));
+        $this->assertIsInt($newId);
+    }
 }
