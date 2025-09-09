@@ -204,6 +204,70 @@ $tableName = $vectorTable->getVectorTableName();
 $dimension = $vectorTable->getDimension();
 ```
 
+## Warning: Breaking changes in 3.x
+
+This fork of the library (maxguru/mysql-vector) has breaking changes compared to the original 2.x version (allanpichardo/mysql-vector). Please review the relevant section before using this fork.
+
+### 2.0.0 → 3.0.0
+
+- Database schema overhaul
+  - Removed columns: vector (JSON), normalized_vector (JSON), magnitude (DOUBLE)
+  - Added columns: normalized_vector VARBINARY(4*dimension) with float32 LE encoding; binary_code VARBINARY; metadata JSON
+  - Removed COSIM stored function; 3.x does not create or require any stored functions
+  - Action: Drop the old 2.x table and recreate it with initialize(); existing 2.x tables are not compatible
+  - Action: Drop the stored function in database
+
+- initialize() signature and behavior
+  - 2.x: initialize(bool $ifNotExists = true)
+  - 3.0.0: initialize(array $metadataJsonPathIndexes = []) and fails if the table already exists
+  - Action: Update calls to initialize() if you rely on $ifNotExists
+  - Action: Update code to call initialize() only once if table doesn't exist; Use deinitialize() to drop before re-initializing
+  - Action: Use deinitialize() to drop the table to clean up
+
+- upsert() signature and parameter order
+  - 2.x: upsert(array $vector, int $id = null)
+  - 3.0.0: upsert(array $vector, ?array $metadata = null, ?int $id = null)
+  - Note: Parameter order changed; add metadata as the second argument
+  - Note: Vectors must match the table dimension (no automatic truncation)
+  - Action: Update calls to upsert() to pass metadata (or null) before id
+  - Action: Update code to handle new exceptions (e.g. InvalidArgumentException on dimension mismatch)
+
+- batchInsert() input/return value
+  - 2.x: batchInsert(array $vectors): array (returns inserted IDs)
+  - 3.0.0: batchInsert(array $items): array (still returns inserted IDs); each item is ['vector' => array<float>, 'metadata' => array|null]
+  - Action: Update calls to batchInsert() to pass array of items instead of vectors
+  - Action: Update code to handle new exceptions (e.g. InvalidArgumentException on dimension mismatch)
+
+- search() signature and result shape
+  - 2.x: search(array $vector, int $n = 10) → results include id, vector, normalized_vector, magnitude, similarity
+  - 3.0.0: search(array $vector, int $n = 10, ?int $candidateMultiplier = null)
+    - Results now include id, similarity, metadata (vector contents are no longer returned)
+    - Two‑stage algorithm retained; re‑ranking performed in PHP (no COSIM function)
+  - Action: Update calls to search() to remove reliance on vector contents in results
+
+- cosim() behavior and return type
+  - 2.x: DB function COSIM on JSON vectors; returns float and could return NULL on mismatch
+  - 3.0.0: Normalizes inputs and computes dot product in PHP with stricter validation (throws InvalidArgumentException on dimension mismatch)
+  - Action: Update calls to cosim() to handle new exceptions and return type
+
+- select()/selectAll() result shape
+  - 2.x: Returned id, vector, normalized_vector, magnitude, binary_code
+  - 3.0.0: Return id and metadata only
+  - Action: Update calls to select()/selectAll() to remove reliance on vector contents in results
+
+### 3.0.0 → 3.1.0
+
+- search() signature expanded
+  - 3.0.0: search(array $vector, int $n = 10, ?int $candidateMultiplier = null)
+  - 3.1.0: search(array $vector, ?array $conditions = null, int $n = 10, ?int $candidateMultiplier = null)
+  - Action: If you previously called search($v, 5), update to search($v, null, 5) to pass topN as the third argument.
+
+- batchInsert() return type changed
+  - 3.0.0: batchInsert(array $items): array (returned inserted IDs)
+  - 3.1.0: batchInsert(array $items): void (no longer returns IDs)
+  - Note: IDs are no longer returned by batchInsert() to avoid overhead and complexity
+  - Action: Update calls to batchInsert() to remove reliance on return value; suggested alternative: use upsert() or store metadata to distinguish vectors
+
 ## Contributions
 Contributions to this project are welcome. Please ensure that your code adheres to the existing coding standards and includes appropriate tests.
 
