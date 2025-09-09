@@ -1120,6 +1120,112 @@ class VectorTable
         }
     }
 
+    /**
+     * Delete multiple vectors by id in batches within a single transaction.
+     * Uses a batching strategy similar to one in batchInsert.
+     *
+     * @param array $ids List of integer ids to delete
+     * @return void
+     * @throws \Exception on SQL errors or invalid inputs
+     */
+    public function batchDelete(array $ids): void {
+        if (empty($ids)) { return; }
+
+        $this->mysqli->begin_transaction();
+
+        try {
+            $escapedVectorTableName = $this->escapeIdentifier($this->getVectorTableName());
+
+            // Determine server packet budget (~90% of max_allowed_packet)
+            $maxPacket = $this->getMaxAllowedPacket();
+            $budget = (int) floor($maxPacket * 0.9);
+
+            // SQL text components for DELETE ... WHERE id IN (?, ?, ...)
+            $sqlHeader = "DELETE FROM {$escapedVectorTableName} WHERE id IN (";
+            $sqlFooter = ')';
+            $baseSqlLen = strlen($sqlHeader) + strlen($sqlFooter);
+
+            // Each id contributes a placeholder and a separator comma, e.g., "?,"
+            $perIdSqlOverhead = 2; // conservative estimate for "?,"
+
+            // Practical cap for placeholder count in one prepared statement
+            $maxParamsPerStmt = 60000;
+
+            // Accumulators for the current batch
+            $placeholders = [];
+            $types = '';
+            $params = [];
+            $currentParamBytes = 0;
+            $currentSqlLen = $baseSqlLen; // header + footer
+            $currentParamsCount = 0;
+
+            // Per-parameter type+flag bytes in COM_STMT_EXECUTE
+            $perParamTypeBytes = 2;
+
+            // Size of row in bytes: int value + type array bytes (2 per param)
+            $rowParamBytes = PHP_INT_SIZE + $perParamTypeBytes;
+
+            $flushBatch = function() use (&$placeholders, &$types, &$params, $sqlHeader, $sqlFooter, &$currentParamBytes, &$currentSqlLen, &$currentParamsCount) {
+                if (empty($placeholders)) { return; }
+                $sql = $sqlHeader . implode(',', $placeholders) . $sqlFooter;
+                $stmt = $this->mysqli->prepare($sql);
+                if (!$stmt) {
+                    throw new \Exception('Prepare failed: ' . $this->mysqli->error);
+                }
+                try {
+                    $stmt->bind_param($types, ...$params);
+                    if (!$stmt->execute()) {
+                        throw new \Exception('Execute failed: ' . $stmt->error);
+                    }
+                } finally {
+                    $stmt->close();
+                }
+                // Reset accumulators
+                $placeholders = [];
+                $types = '';
+                $params = [];
+                $currentParamBytes = 0;
+                $currentSqlLen = strlen($sqlHeader) + strlen($sqlFooter);
+                $currentParamsCount = 0;
+            };
+
+            foreach ($ids as $rawId) {
+                if (!is_int($rawId) && !(is_string($rawId) && ctype_digit($rawId))) {
+                    throw new \InvalidArgumentException('batchDelete expects an array of integer ids');
+                }
+                $id = (int)$rawId;
+
+                $wouldSql = $currentSqlLen + $perIdSqlOverhead;
+                $wouldParam = $currentParamBytes + $rowParamBytes;
+                $wouldParamsCount = $currentParamsCount + 1;
+                // Account for parameter NULL-bitmap growth: length = ceil(param_count/8)
+                $nullBitmapBefore = intdiv($currentParamsCount + 7, 8);
+                $nullBitmapAfter  = intdiv($wouldParamsCount + 7, 8);
+                $nullBitmapDelta  = $nullBitmapAfter - $nullBitmapBefore;
+                if ($wouldSql + $wouldParam + $nullBitmapDelta > $budget || $wouldParamsCount > $maxParamsPerStmt) {
+                    $flushBatch();
+                    $nullBitmapDelta = 1;
+                }
+
+                // Add id to current batch
+                $placeholders[] = '?';
+                $types .= 'i';
+                $params[] = $id;
+                $currentSqlLen += $perIdSqlOverhead;
+                $currentParamBytes += ($rowParamBytes + $nullBitmapDelta);
+                $currentParamsCount += 1;
+            }
+
+            // Flush any remaining ids
+            $flushBatch();
+
+            $this->mysqli->commit();
+        } catch (\Exception $e) {
+            $this->mysqli->rollback();
+            throw $e;
+        }
+    }
+
     public function getConnection(): \mysqli {
         return $this->mysqli;
     }

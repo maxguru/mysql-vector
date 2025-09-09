@@ -36,6 +36,7 @@ Normalized vector storage uses VARBINARY(4 * dimension). MySQL's maximum VARBINA
 - Vector operations: insertion, deletion, retrieval, and search by cosine similarity.
 - Support for high-dimensional vectors (up to 16,383 dimensions).
 - Batch insert operations for efficient bulk vector storage.
+- Batch delete operations to remove many vectors efficiently.
 - Optional per-vector `metadata` stored as JSON included in retrieval and search results.
 
 ## Requirements
@@ -128,6 +129,9 @@ $vectorTable->batchInsert($items);
 
 // Delete a vector
 $vectorTable->delete($vectorId);
+
+// Batch delete vectors by id
+$vectorTable->batchDelete([1, 2, 3]);
 ```
 
 ### Calculating Cosine Similarity

@@ -703,4 +703,57 @@ class VectorTableTest extends BaseVectorTest
             $vt->getConnection()->rollback();
         }
     }
+
+    public function testBatchDelete_Basic(): void {
+        $vt = $this->makeTable('batch_delete_basic', $this->dimension);
+        $vt->getConnection()->begin_transaction();
+
+        $ids = [];
+        foreach ($this->getRandomVectors(20, $this->dimension) as $v) {
+            $ids[] = $vt->upsert($v);
+        }
+        $this->assertEquals(20, $vt->count());
+
+        // Delete half in one call
+        $toDelete = array_slice($ids, 0, 10);
+        $vt->batchDelete($toDelete);
+        $this->assertEquals(10, $vt->count());
+
+        // Delete the rest
+        $vt->batchDelete(array_slice($ids, 10));
+        $this->assertEquals(0, $vt->count());
+
+        $vt->getConnection()->rollback();
+    }
+
+    public function testBatchDelete_EmptyInput_NoOp(): void {
+        $vt = $this->makeTable('batch_delete_empty', $this->dimension);
+        $vt->getConnection()->begin_transaction();
+
+        foreach ($this->getRandomVectors(5, $this->dimension) as $v) { $vt->upsert($v); }
+        $before = $vt->count();
+        $vt->batchDelete([]);
+        $this->assertEquals($before, $vt->count());
+
+        $vt->getConnection()->rollback();
+    }
+
+    public function testBatchDelete_ParameterLimitScale(): void {
+        // Exercise chunking path with many ids but small vectors for speed
+        $dimension = 1;
+        $vt = $this->makeTable('batch_delete_many', $dimension);
+        $vt->getConnection()->begin_transaction();
+
+        $rows = intdiv(60000, 1) + 100; // > 60k rows to ensure multiple chunks
+        $items = array_fill(0, $rows, ['vector' => [0.01]]);
+        $vt->batchInsert($items);
+        $this->assertEquals($rows, $vt->count());
+
+        // Collect ids after insert and batch delete them
+        $ids = array_column($vt->selectAll(), 'id');
+        $vt->batchDelete($ids);
+        $this->assertEquals(0, $vt->count());
+
+        $vt->getConnection()->rollback();
+    }
 }
