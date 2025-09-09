@@ -13,14 +13,14 @@ Vectors are binary quantized upon insertion into the database to optimize search
 
 This library is suitable for datasets up to 1,000,000 vectors. For larger datasets, consider using a dedicated vector database such as [Qdrant](https://qdrant.tech/).
 
-Search Benchmarks (384-dimensional vectors):
+Search Benchmarks (384-dimensional vectors, MySQL 5.7):
 Vectors | Time (seconds)
 --------|---------------
-100     | 0.0037
-1000    | 0.0041
-10000   | 0.0096
-100000  | 0.0551
-1000000 | 1.1726
+100     | 0.0035
+1000    | 0.0043
+10000   | 0.0109
+100000  | 0.0748
+1000000 | 1.1343
 
 ## Storage Efficiency
 Normalized vectors are stored as 32-bit IEEE-754 floats (float32) in little-endian order inside the `normalized_vector` VARBINARY column. Round-trip encoding/decoding to and from binary can introduce very small precision differences compared to 64-bit doubles; typical tolerances are around 1e-6 when comparing vectors after storage/retrieval. This precision is sufficient for cosine-similarity/dot-product ranking in typical embedding-based applications and allows significantly smaller storage and better performance than 64-bit doubles. Storing 4 bytes per dimension (instead of 8 bytes) allows 2x higher limit on dimensions and halves storage and network costs, which improves performance for insert, read, and re-ranking, while still maintaining sufficient accuracy for similarity search purposes.
