@@ -73,9 +73,8 @@ $vectorTable = new VectorTable($mysqli, $tableName, $dimension, $engine);
 ### Setting Up the Vector Table in MySQL
 The library provides flexible initialization options for different use cases:
 
-> Important
-> - Initialization will throw an exception if the target table already exists.
-> - Ensure you use a unique base table name or clean up with deinitialize() before re-initializing.
+> Initialization will throw an exception if the target table already exists.
+> Ensure you use a unique base table name or clean up with deinitialize() before re-initializing.
 
 #### Complete Initialization
 The `initialize` method creates the vector table in the database:
@@ -206,9 +205,14 @@ $dimension = $vectorTable->getDimension();
 
 ## Warning: Breaking changes in 3.x
 
-This fork of the library (maxguru/mysql-vector) has breaking changes compared to the original 2.x version (allanpichardo/mysql-vector). Please review the relevant section before using this fork.
+This fork of the library (maxguru/mysql-vector) has breaking changes compared to the original 2.x version (allanpichardo/mysql-vector). Please review the relevant sections before upgrading.
 
-### 2.0.0 → 3.0.0
+### 2.0.x → 3.0.0
+
+- Embeddings generation removed
+  - 2.x included built-in embeddings generation utilities; 3.0.0 removes the entire embeddings generation component
+  - The library is now “bring your own vectors” only: you must compute embeddings externally and pass numeric arrays to upsert()/batchInsert()
+  - Action: Remove any usage of previous embeddings-generation code and replace it with calls to your external embedding provider
 
 - Database schema overhaul
   - Removed columns: vector (JSON), normalized_vector (JSON), magnitude (DOUBLE)
@@ -290,7 +294,7 @@ ddev composer test
 Use PHP CompatInfo to run an analysis of the library:
 
 ```bash
-composer compatinfo
+ddev composer compatinfo
 ```
 
 - Initializes the php-compatinfo database at `vendor/.cache/php-compatinfo/compatinfo-db.sqlite` (first run only)
@@ -299,7 +303,7 @@ composer compatinfo
 If you need to rebuild the php-compatinfo database, use:
 
 ```bash
-composer compatinfo:rebuild
+ddev composer compatinfo:rebuild
 ```
 
 ### Roadmap
