@@ -513,65 +513,156 @@ class VectorTable
     }
 
     /**
+     * Fetch the server's max_allowed_packet (in bytes). Falls back to 4MB if unavailable.
+     * Cached per mysqli connection using a method-level static cache keyed by the connection object id.
+     */
+    private function getMaxAllowedPacket(): int
+    {
+        static $cache = [];
+        $key = spl_object_id($this->mysqli);
+        if (!isset($cache[$key])) {
+            $cache[$key] = 4194304; // default 4MB
+            $res = $this->mysqli->query("SELECT @@max_allowed_packet");
+            if ($res !== false) {
+                $row = $res->fetch_row();
+                $res->free();
+                if ($row && isset($row[0]) && (int)$row[0] > 0) {
+                    $cache[$key] = (int)$row[0];
+                }
+            }
+        }
+        return $cache[$key];
+    }
+
+    /**
      * Insert multiple vectors (with optional per-item metadata) in a single transaction
      * @param array $vectorData Array of items: [ ['vector' => array<float>, 'metadata' => array|null], ... ]
-     * @return array Array of ids of the inserted vectors
+     * @return void
      * @throws \Exception
      */
-    public function batchInsert(array $vectorData): array {
-        $ids = [];
+    public function batchInsert(array $vectorData): void {
+        if (empty($vectorData)) { return; }
 
         $this->mysqli->begin_transaction();
 
         try {
             $escapedTableName = $this->escapeIdentifier($this->getVectorTableName());
-            $statement = $this->mysqli->prepare("INSERT INTO {$escapedTableName} (normalized_vector, binary_code, metadata) VALUES (?, UNHEX(?), ?)");
-            if(!$statement) {
-                throw new \Exception("Prepare failed: " . $this->mysqli->error);
-            }
 
-            try {
-                foreach ($vectorData as $item) {
+            // Determine server limits and establish a safe payload budget (~90% of max_allowed_packet)
+            $maxPacket = $this->getMaxAllowedPacket();
+            $budget = (int) floor($maxPacket * 0.9);
 
-                    if (!is_array($item) || !array_key_exists('vector', $item)) {
-                        throw new \InvalidArgumentException('batchInsert expects each item to have a vector key');
-                    }
+            // Precompute deterministic sizes
+            $vecBytes = 4 * $this->dimension; // float32 blob bytes
+            $codeBytes = (int) ceil($this->dimension / 8);
+            $codeHexChars = 2 * $codeBytes;   // hex chars sent as string param
+            $perParamTypeBytes = 2;           // type + flags per-parameter in COM_STMT_EXECUTE
 
-                    $vector = $item['vector'];
+            // SQL text components
+            $valuesTemplate = "(?, UNHEX(?), ?)";
+            $perRowSqlOverhead = strlen($valuesTemplate) + 1; // template length + comma
+            $sqlHeader = "INSERT INTO {$escapedTableName} (normalized_vector, binary_code, metadata) VALUES ";
+            $baseSqlLen = strlen($sqlHeader) - 1; // subtract 1 to account for first tuple lacking a leading comma
 
-                    if (count($vector) !== $this->dimension) {
-                        throw new \InvalidArgumentException("Vector dimension must match table dimension: {$this->dimension}");
-                    }
+            // Practical cap for number of parameters in one prepared statement
+            // MySQL enforces a hard server-side limit of 65,535 placeholders (ER_PS_MANY_PARAM)
+            // We keep a safety margin below that to account for overhead
+            // With 3 params/row, 60,000 params ~= 20,000 rows per statement
+            $maxParamsPerStmt = 60000;
 
-                    $normalizedVector = $this->normalize($vector);
-                    $binaryCode = $this->vectorToHex($normalizedVector);
-                    $normalizedVectorBlob = $this->vectorToBlob($normalizedVector);
+            // Accumulators for the current batch
+            $placeholders = [];
+            $types = '';
+            $params = [];
+            $currentParamBytes = 0;
+            $currentSqlLen = $baseSqlLen;
+            $currentParamsCount = 0;
 
-                    $metadataJson = null;
-                    if (array_key_exists('metadata', $item)) {
-                        $metadata = $item['metadata'];
-                        $metadataJson = is_null($metadata) ? null : json_encode($metadata);
-                    }
+            $flushBatch = function() use (&$placeholders, &$types, &$params, $sqlHeader, &$currentParamBytes, &$currentSqlLen, &$currentParamsCount) {
+                if (empty($placeholders)) { return; }
 
-                    $statement->bind_param('sss', $normalizedVectorBlob, $binaryCode, $metadataJson);
-
-                    if (!$statement->execute()) {
-                        throw new \Exception("Execute failed: " . $statement->error);
-                    }
-
-                    $ids[] = $statement->insert_id;
+                $sql = $sqlHeader . implode(',', $placeholders);
+                $stmt = $this->mysqli->prepare($sql);
+                if (!$stmt) {
+                    throw new \Exception("Prepare failed: " . $this->mysqli->error);
                 }
-            } finally {
-                $statement->close();
+
+                try {
+                    $stmt->bind_param($types, ...$params);
+                    if (!$stmt->execute()) {
+                        throw new \Exception("Execute failed: " . $stmt->error);
+                    }
+                } finally {
+                    $stmt->close();
+                }
+
+                // Reset accumulators
+                $placeholders = [];
+                $types = '';
+                $params = [];
+                $currentParamBytes = 0;
+                $currentSqlLen = strlen($sqlHeader);
+                $currentParamsCount = 0;
+            };
+
+            foreach ($vectorData as $item) {
+                // Validate item shape and dimensions
+                if (!is_array($item) || !array_key_exists('vector', $item)) {
+                    throw new \InvalidArgumentException('batchInsert expects each item to have a vector key');
+                }
+                $vector = $item['vector'];
+                if (count($vector) !== $this->dimension) {
+                    throw new \InvalidArgumentException("Vector dimension must match table dimension: {$this->dimension}");
+                }
+
+                // Prepare encoded payloads for this row
+                $normalizedVector = $this->normalize($vector);
+                $binaryCode = $this->vectorToHex($normalizedVector);
+                $normalizedVectorBlob = $this->vectorToBlob($normalizedVector);
+                $metadataJson = (!array_key_exists('metadata', $item) || is_null($item['metadata']) ? null : json_encode($item['metadata']));
+
+                // Estimate per-row parameter bytes
+                $metadataBytes = $metadataJson === null ? 0 : strlen($metadataJson); // NULL metadata sends 0 value bytes in COM_STMT_EXECUTE
+                $typesArrayBytes = 3 * $perParamTypeBytes; // Add +2 bytes per parameter for types array (3 params/row)
+                $rowParamBytes = $vecBytes + $codeHexChars + $metadataBytes + $typesArrayBytes;
+
+                // If adding this row to the current batch would exceed limits, flush first
+                $wouldSql = $currentSqlLen + $perRowSqlOverhead;
+                $wouldParam = $currentParamBytes + $rowParamBytes;
+                $wouldParamsCount = $currentParamsCount + 3; // 3 params per row
+                // Account for parameter NULL-bitmap growth: length = ceil(param_count/8)
+                $nullBitmapBefore = intdiv($currentParamsCount + 7, 8);
+                $nullBitmapAfter  = intdiv($wouldParamsCount + 7, 8);
+                $nullBitmapDelta  = $nullBitmapAfter - $nullBitmapBefore;
+                if ($wouldSql + $wouldParam + $nullBitmapDelta > $budget || $wouldParamsCount > $maxParamsPerStmt) {
+                    $flushBatch();
+                    $nullBitmapDelta = 1;
+                }
+
+                // After flushing (if needed), ensure this single row can fit by itself (include initial NULL-bitmap byte)
+                if ($baseSqlLen + $perRowSqlOverhead + $rowParamBytes + 1 > $budget) {
+                    throw new \Exception("Single row payload exceeds safe packet size budget; consider increasing max_allowed_packet or reducing vector dimension/metadata size");
+                }
+
+                // Add row to current batch and update accumulators
+                $placeholders[] = $valuesTemplate;
+                $types .= 'sss';
+                $params[] = $normalizedVectorBlob;
+                $params[] = $binaryCode;
+                $params[] = $metadataJson;
+                $currentSqlLen += $perRowSqlOverhead;
+                $currentParamBytes += ($rowParamBytes + $nullBitmapDelta);
+                $currentParamsCount += 3;
             }
+
+            // Flush any remaining rows
+            $flushBatch();
 
             $this->mysqli->commit();
         } catch (\Exception $e) {
             $this->mysqli->rollback();
             throw $e;
         }
-
-        return $ids;
     }
 
     /**

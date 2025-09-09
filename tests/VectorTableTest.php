@@ -574,4 +574,133 @@ class VectorTableTest extends BaseVectorTest
 
         $vt->getConnection()->rollback();
     }
+
+    public function testBatchInsert_EmptyInput_ReturnsEmptyAndNoChange(): void
+    {
+        $vectorTable = $this->makeTable('batch_empty_input', $this->dimension);
+        $vectorTable->getConnection()->begin_transaction();
+        $before = $vectorTable->count();
+        $vectorTable->batchInsert([]);
+        $after = $vectorTable->count();
+        $this->assertEquals($before, $after);
+        $vectorTable->getConnection()->rollback();
+    }
+
+    public function testBatchInsert_VaryingMetadata_DynamicBatchingWorks(): void
+    {
+        $vectorTable = $this->makeTable('batch_varying_meta', $this->dimension);
+        $vectorTable->getConnection()->begin_transaction();
+
+        $count = 50;
+        $items = [];
+        for ($i = 0; $i < $count; $i++) {
+            $v = $this->getRandomVectors(1, $this->dimension)[0];
+            $metaLen = ($i % 5) * 2048; // up to 8KB metadata to vary payloads
+            $meta = $metaLen > 0 ? ['m' => str_repeat('A', $metaLen)] : null;
+            $items[] = ['vector' => $v, 'metadata' => $meta];
+        }
+
+        $vectorTable->batchInsert($items);
+        $this->assertEquals($count, $vectorTable->count());
+
+        $vectorTable->getConnection()->rollback();
+    }
+
+    public function testBatchInsert_SingleRowExceedsBudget_Throws(): void
+    {
+        // Query server max_allowed_packet and compute a single-row payload that exceeds 90% budget
+        $res = self::$mysqli->query('SELECT @@max_allowed_packet');
+        $this->assertNotFalse($res, 'Failed to query max_allowed_packet');
+        $row = $res->fetch_row();
+        $res->free();
+        $this->assertIsArray($row);
+        $maxPacket = (int)$row[0];
+
+        $vectorTable = $this->makeTable('batch_exceed_row', $this->dimension);
+        $vectorTable->getConnection()->begin_transaction();
+
+        $budget = (int) floor(0.9 * $maxPacket);
+        $vecBytes = 4 * $this->dimension;
+        $codeBytes = (int) ceil($this->dimension / 8);
+        $codeHexChars = 2 * $codeBytes;
+        $overshoot = 64 * 1024;
+        $targetParamBytes = $budget + $overshoot;
+        $emptyJsonOverhead = strlen(json_encode(['m' => '']));
+        $valueLen = max(1, $targetParamBytes - $vecBytes - $codeHexChars - $emptyJsonOverhead);
+        $metadata = ['m' => str_repeat('A', $valueLen)];
+
+        $vector = $this->getRandomVectors(1, $this->dimension)[0];
+        $items = [['vector' => $vector, 'metadata' => $metadata]];
+
+        try {
+            $vectorTable->batchInsert($items);
+            $this->fail('Expected Exception due to single row exceeding safe packet size budget');
+        } catch (\Exception $e) {
+            $this->assertStringContainsString('exceeds safe packet size budget', $e->getMessage());
+        } finally {
+            $vectorTable->getConnection()->rollback();
+        }
+    }
+
+    public function testBatchInsert_SingleRowAtBudget_Succeeds(): void
+    {
+        $res = self::$mysqli->query('SELECT @@max_allowed_packet');
+        $this->assertNotFalse($res, 'Failed to query max_allowed_packet');
+        $row = $res->fetch_row();
+        $res->free();
+        $this->assertIsArray($row);
+        $maxPacket = (int)$row[0];
+
+        $vt = $this->makeTable('batch_single_at_budget', $this->dimension);
+        $vt->getConnection()->begin_transaction();
+
+        $budget = (int) floor(0.9 * $maxPacket);
+        $valuesTemplate = "(?, UNHEX(?), ?)";
+        $perRowSqlOverhead = strlen($valuesTemplate) + 1;
+        $sqlHeader = "INSERT INTO `" . $vt->getVectorTableName() . "` (normalized_vector, binary_code, metadata) VALUES ";
+        $baseSqlLen = strlen($sqlHeader) - 1;
+
+        $vecBytes = 4 * $this->dimension;
+        $codeBytes = (int) ceil($this->dimension / 8);
+        $codeHexChars = 2 * $codeBytes;
+        $perParamTypeBytes = 2; // COM_STMT_EXECUTE type+flag per param
+        $typesArrayBytes = 3 * $perParamTypeBytes; // 3 params/row
+
+        $emptyJsonOverhead = strlen(json_encode(['m' => '']));
+        // Include initial NULL-bitmap byte for the first execute packet
+        $targetRowParamBytes = max(1, $budget - $baseSqlLen - $perRowSqlOverhead - 1);
+        $valueLen = max(1, $targetRowParamBytes - $vecBytes - $codeHexChars - $typesArrayBytes - $emptyJsonOverhead);
+        $metadata = ['m' => str_repeat('A', $valueLen)];
+
+        $vector = $this->getRandomVectors(1, $this->dimension)[0];
+        $items = [['vector' => $vector, 'metadata' => $metadata]];
+
+        try {
+            $vt->batchInsert($items);
+            $this->assertEquals(1, $vt->count());
+        } finally {
+            $vt->getConnection()->rollback();
+        }
+    }
+
+    public function testBatchInsert_AtParameterLimit_Succeeds(): void
+    {
+        // With 3 params per row, 60,000 params => 20,000 rows in a single statement
+        $rows = intdiv(60000, 3);
+        $dimension = 1; // keep payload small to avoid hitting packet limits first
+        $vt = $this->makeTable('batch_param_limit', $dimension);
+        $vt->getConnection()->begin_transaction();
+
+        $items = [];
+        for ($i = 0; $i < $rows; $i++) {
+            $items[] = ['vector' => [0.01], 'metadata' => null];
+        }
+
+        try {
+            $vt->batchInsert($items);
+            $this->assertEquals($rows, $vt->count());
+        } finally {
+            $vt->getConnection()->rollback();
+        }
+    }
 }

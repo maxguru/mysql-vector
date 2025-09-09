@@ -124,7 +124,7 @@ $items = [
     ['vector' => [0.1, 0.2, 0.3 /* ... */], 'metadata' => ['content_type' => 'pdf', 'content_id' => 123, 'chunk_hash' => 'aaa111']],
     ['vector' => [0.4, 0.5, 0.6 /* ... */], 'metadata' => ['content_type' => 'pdf', 'content_id' => 124, 'chunk_hash' => 'bbb222']],
 ];
-$vectorIds = $vectorTable->batchInsert($items);
+$vectorTable->batchInsert($items);
 
 // Delete a vector
 $vectorTable->delete($vectorId);
