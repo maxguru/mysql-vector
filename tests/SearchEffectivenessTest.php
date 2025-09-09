@@ -282,7 +282,7 @@ class SearchEffectivenessTest extends BaseVectorTest
 
             // Search for similar vectors
             $startTime = microtime(true);
-            $results = $vectorTable->search($queryVector, 10);
+            $results = $vectorTable->search($queryVector, null, 10);
             $searchTime = microtime(true) - $startTime;
 
             echo "  Search completed in " . number_format($searchTime * 1000, 2) . "ms\n";
@@ -454,7 +454,7 @@ class SearchEffectivenessTest extends BaseVectorTest
             echo "Test: {$testCase['test_type']} - '{$testCase['query']}'\n";
 
             $queryVector = $testCase['entry']['vector'];
-            $results = $vectorTable->search($queryVector, 5);
+            $results = $vectorTable->search($queryVector, null, 5);
 
             // Assert that search returns results
             $this->assertNotEmpty($results, "Search should return results for edge case: '{$testCase['query']}'");

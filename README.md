@@ -16,11 +16,11 @@ This library is suitable for datasets up to 1,000,000 vectors. For larger datase
 Search Benchmarks (384-dimensional vectors):
 Vectors | Time (seconds)
 --------|---------------
-100     | 0.0045
-1000    | 0.0048
-10000   | 0.0102
-100000  | 0.0641
-1000000 | 1.5224
+100     | 0.0037
+1000    | 0.0041
+10000   | 0.0096
+100000  | 0.0551
+1000000 | 1.1726
 
 ## Storage Efficiency
 Normalized vectors are stored as 32-bit IEEE-754 floats (float32) in little-endian order inside the `normalized_vector` VARBINARY column. Round-trip encoding/decoding to and from binary can introduce very small precision differences compared to 64-bit doubles; typical tolerances are around 1e-6 when comparing vectors after storage/retrieval. This precision is sufficient for cosine-similarity/dot-product ranking in typical embedding-based applications and allows significantly smaller storage and better performance than 64-bit doubles. Storing 4 bytes per dimension (instead of 8 bytes) allows 2x higher limit on dimensions and halves storage and network costs, which improves performance for insert, read, and re-ranking, while still maintaining sufficient accuracy for similarity search purposes.
@@ -154,12 +154,19 @@ The library uses adaptive candidate selection for Stage‑1 (Hamming distance) f
 This favors accuracy for small result sets (larger candidate pools) and efficiency for larger result sets (smaller multipliers). You can override this behavior by providing a custom multiplier.
 
 ```php
-// Default adaptive candidate selection
-$similarVectors = $vectorTable->search($vector, $topN);
+// Default adaptive candidate selection with default topN (10)
+$similarVectors = $vectorTable->search($vector);
+
+// Metadata pre-filter: only consider vectors where content_type='pdf' AND content_id=123
+$similarVectors = $vectorTable->search(
+    $vector,
+    ['$.content_type' => 'pdf', '$.content_id' => 123],
+    $topN=3
+);
 
 // Manual override: force a specific candidate multiplier
 // Using 1 disables the adaptive expansion and uses exactly topN candidates in Stage‑1
-$similarVectors = $vectorTable->search($vector, $topN, 1);
+$similarVectors = $vectorTable->search($vector, null, $topN, 1);
 
 // Results include:
 // - 'id': Vector ID

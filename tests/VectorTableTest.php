@@ -858,4 +858,206 @@ class VectorTableTest extends BaseVectorTest
 
         $vt->getConnection()->rollback();
     }
+
+    public function testSearch_MetadataPreFilter_IndexedBasic(): void
+    {
+        $vt = $this->makeTable('search_meta_idx', $this->dimension, [
+            '$.content_type' => 'ENUM("pdf","doc","html")',
+            '$.content_id'   => 'INT'
+        ]);
+        $vt->getConnection()->begin_transaction();
+
+        // Insert rows
+        $id1 = $vt->upsert(array_fill(0, $this->dimension, 0.50), ['content_type' => 'pdf',  'content_id' => 123]);
+        $vt->upsert(array_fill(0, $this->dimension, 0.40), ['content_type' => 'pdf',  'content_id' => 456]);
+        $vt->upsert(array_fill(0, $this->dimension, 0.30), ['content_type' => 'html', 'content_id' => 123]);
+
+        // Query vector close to id1
+        $q = array_fill(0, $this->dimension, 0.50);
+
+        // Single indexed condition
+        $results = $vt->search($q, ['$.content_type' => 'pdf'], 10);
+        $this->assertNotEmpty($results);
+        foreach ($results as $r) {
+            $this->assertEquals('pdf', $r['metadata']['content_type']);
+        }
+
+        // AND of indexed conditions narrows to content_type=pdf AND content_id=123
+        $resultsAnd = $vt->search($q, ['$.content_type' => 'pdf', '$.content_id' => 123], 10);
+        $this->assertNotEmpty($resultsAnd);
+        $this->assertEquals($id1, $resultsAnd[0]['id']);
+        $this->assertEquals('pdf', $resultsAnd[0]['metadata']['content_type']);
+        $this->assertEquals(123, $resultsAnd[0]['metadata']['content_id']);
+
+        $vt->getConnection()->rollback();
+    }
+
+    public function testSearch_MetadataPreFilter_NonIndexedBasic(): void
+    {
+        $vt = $this->makeTable('search_meta_fallback', $this->dimension);
+        $vt->getConnection()->begin_transaction();
+
+        $vt->upsert(array_fill(0, $this->dimension, 0.11), ['name' => 'Alice', 'score' => 42]);
+        $vt->upsert(array_fill(0, $this->dimension, 0.12), ['name' => 'Bob',   'score' => 7]);
+        $vt->upsert(array_fill(0, $this->dimension, 0.13), ['name' => 'Carol', 'score' => 42]);
+
+        $q = array_fill(0, $this->dimension, 0.12);
+        $results = $vt->search($q, ['$.score' => 42], 10);
+        $this->assertNotEmpty($results);
+        foreach ($results as $r) {
+            $this->assertEquals(42, $r['metadata']['score']);
+        }
+
+        $vt->getConnection()->rollback();
+    }
+
+    public function testSearch_MetadataPreFilter_NullSemantics(): void
+    {
+        $vt = $this->makeTable('search_meta_nulls', $this->dimension);
+        $vt->getConnection()->begin_transaction();
+
+        // explicit JSON null
+        $id1 = $vt->upsert(array_fill(0, $this->dimension, 0.21), ['chunk_hash' => null]);
+        // missing path
+        $id2 = $vt->upsert(array_fill(0, $this->dimension, 0.22), ['x' => 'y']);
+        // metadata NULL
+        $id3 = $vt->upsert(array_fill(0, $this->dimension, 0.23), null);
+        // control (non-null value)
+        $id4 = $vt->upsert(array_fill(0, $this->dimension, 0.24), ['chunk_hash' => 'value']);
+
+        $q = array_fill(0, $this->dimension, 0.22);
+        $results = $vt->search($q, ['$.chunk_hash' => null], 10);
+        $this->assertNotEmpty($results);
+        $ids = array_column($results, 'id');
+        $this->assertContains($id1, $ids);
+        $this->assertContains($id2, $ids);
+        $this->assertContains($id3, $ids);
+        $this->assertNotContains($id4, $ids);
+
+        $vt->getConnection()->rollback();
+    }
+
+    public function testSearch_MetadataPreFilter_EmptyAndNullConditions(): void
+    {
+        $vt = $this->makeTable('search_meta_empty', $this->dimension);
+        $vt->getConnection()->begin_transaction();
+
+        for ($i = 0; $i < 5; $i++) { $vt->upsert(array_fill(0, $this->dimension, 0.3 + 0.01*$i), ['a' => $i]); }
+        $q = array_fill(0, $this->dimension, 0.31);
+
+        $r1 = $vt->search($q); // default
+        $r2 = $vt->search($q, null);
+        $r3 = $vt->search($q, []);
+
+        $this->assertEquals(array_column($r1, 'id'), array_column($r2, 'id'));
+        $this->assertEquals(array_column($r1, 'id'), array_column($r3, 'id'));
+
+        $vt->getConnection()->rollback();
+    }
+
+    public function testSearch_MetadataPreFilter_ResultAccuracyOnSubset(): void
+    {
+        $vt = $this->makeTable('search_meta_accuracy', $this->dimension, [
+            '$.content_type' => 'ENUM("pdf","doc")'
+        ]);
+        $vt->getConnection()->begin_transaction();
+
+        $ids = [];
+        $ids[] = $vt->upsert(array_fill(0, $this->dimension, 0.50), ['content_type' => 'pdf']);
+        $ids[] = $vt->upsert(array_fill(0, $this->dimension, 0.49), ['content_type' => 'pdf']);
+        $ids[] = $vt->upsert(array_fill(0, $this->dimension, 0.10), ['content_type' => 'doc']);
+        $ids[] = $vt->upsert(array_fill(0, $this->dimension, 0.05), ['content_type' => 'doc']);
+
+        $q = array_fill(0, $this->dimension, 0.50);
+        // Unfiltered order
+        $all = $vt->search($q, null, 10, 20);
+        $pdfSet = array_filter($all, fn($r) => ($r['metadata']['content_type'] ?? null) === 'pdf');
+        $pdfIdsFromAll = array_values(array_column($pdfSet, 'id'));
+
+        // Filtered order
+        $filtered = $vt->search($q, ['$.content_type' => 'pdf'], 10, 20);
+        $filteredIds = array_column($filtered, 'id');
+
+        $this->assertEquals($pdfIdsFromAll, $filteredIds, 'Filtered search order should match subset order from unfiltered search');
+
+        $vt->getConnection()->rollback();
+    }
+
+    public function testSearch_MetadataPreFilter_CandidateMultiplierInteraction(): void
+    {
+        $vt = $this->makeTable('search_meta_multiplier', $this->dimension, [
+            '$.category' => 'ENUM("A","B")'
+        ]);
+        $vt->getConnection()->begin_transaction();
+
+        for ($i = 0; $i < 20; $i++) {
+            $val = ($i % 2 === 0) ? 'A' : 'B';
+            $vt->upsert(array_fill(0, $this->dimension, 0.2 + 0.01*$i), ['category' => $val]);
+        }
+        $q = array_fill(0, $this->dimension, 0.25);
+
+        // Default adaptive
+        $rDefault = $vt->search($q, ['$.category' => 'A'], 5);
+        $this->assertNotEmpty($rDefault);
+
+        // Minimal multiplier
+        $rMin = $vt->search($q, ['$.category' => 'A'], 5, 1);
+        $this->assertNotEmpty($rMin);
+
+        $vt->getConnection()->rollback();
+    }
+
+    public function testSearch_MetadataPreFilter_MixedIndexedAndFallback(): void
+    {
+        $vt = $this->makeTable('search_meta_mixed', $this->dimension, [
+            '$.category' => 'ENUM("A","B")'
+        ]);
+        $vt->getConnection()->begin_transaction();
+
+        $vt->upsert(array_fill(0, $this->dimension, 0.30), ['category' => 'A', 'score' => 42]);
+        $vt->upsert(array_fill(0, $this->dimension, 0.20), ['category' => 'A', 'score' => 7]);
+        $vt->upsert(array_fill(0, $this->dimension, 0.10), ['category' => 'B', 'score' => 42]);
+
+        $q = array_fill(0, $this->dimension, 0.30);
+        $r = $vt->search($q, ['$.category' => 'A', '$.score' => 42], 10);
+        $this->assertNotEmpty($r);
+        $this->assertEquals('A', $r[0]['metadata']['category']);
+        $this->assertEquals(42, $r[0]['metadata']['score']);
+
+        $vt->getConnection()->rollback();
+    }
+
+    public function testSearch_MetadataPreFilter_InvalidJsonPath_Throws(): void
+    {
+        $vt = $this->makeTable('search_meta_badpath', $this->dimension);
+        $vt->getConnection()->begin_transaction();
+        $vt->upsert(array_fill(0, $this->dimension, 0.10), ['content_type' => 'pdf']);
+        $q = array_fill(0, $this->dimension, 0.10);
+
+        try {
+            $vt->search($q, ['content_type' => 'pdf'], 10); // missing '$.' prefix
+            $this->fail('Expected InvalidArgumentException for invalid JSON path');
+        } catch (\InvalidArgumentException) {
+            $this->assertTrue(true);
+        }
+
+        $vt->getConnection()->rollback();
+    }
+
+    public function testSearch_MetadataPreFilter_NoMatches_ReturnsEmpty(): void
+    {
+        $vt = $this->makeTable('search_meta_nomatch', $this->dimension, [
+            '$.content_type' => 'ENUM("pdf","doc")'
+        ]);
+        $vt->getConnection()->begin_transaction();
+
+        $vt->upsert(array_fill(0, $this->dimension, 0.50), ['content_type' => 'pdf']);
+        $q = array_fill(0, $this->dimension, 0.50);
+
+        $r = $vt->search($q, ['$.content_type' => 'doc', '$.nonexistent' => 1], 10);
+        $this->assertIsArray($r);
+        $this->assertCount(0, $r);
+
+        $vt->getConnection()->rollback();
+    }
 }

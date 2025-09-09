@@ -1016,6 +1016,8 @@ class VectorTable
      * 2. Precise cosine similarity re-ranking of candidates
      *
      * @param array $vector Query vector to search for
+     * @param array|null $conditions Optional metadata pre-filter (AND of equality on JSON path values).
+     *                               Follows selectByMetadata semantics and can leverage typed generated indexes.
      * @param int $n Maximum number of results to return (default: 10)
      * @param int|null $candidateMultiplier Optional multiplier for Stage 1 filtering accuracy.
      *                                      When null (default), uses adaptive formula based on result count:
@@ -1030,7 +1032,7 @@ class VectorTable
      *               - 'metadata': Associated metadata (array|null)
      * @throws \Exception If database operations fail or invalid input
      */
-    public function search(array $vector, int $n = 10, ?int $candidateMultiplier = null): array
+    public function search(array $vector, ?array $conditions = null, int $n = 10, ?int $candidateMultiplier = null): array
     {
         // Input validation
         if (empty($vector)) {
@@ -1059,15 +1061,29 @@ class VectorTable
         }
         $candidateLimit = $n * $candidateMultiplier;
 
+        // Build optional metadata pre-filter WHERE clause
+        $whereSql = '';
+        $types = '';
+        $params = [];
+        if (is_array($conditions) && !empty($conditions)) {
+            $wi = $this->buildMetadataWhere($conditions);
+            $whereSql = " WHERE {$wi['where']}";
+            $types = $wi['types'];
+            $params = $wi['params'];
+        }
+
         // Fetch top candidate IDs by Hamming distance (minimize I/O during filesort by keeping buffer size small)
-        $sql = "SELECT id FROM {$escapedTableName} ORDER BY BIT_COUNT(binary_code ^ UNHEX(?)) LIMIT ?";
+        $sql = "SELECT id FROM {$escapedTableName}{$whereSql} ORDER BY BIT_COUNT(binary_code ^ UNHEX(?)) LIMIT ?";
         $statement = $this->mysqli->prepare($sql);
         if (!$statement) {
             throw new \Exception("Failed to prepare search query: " . $this->mysqli->error);
         }
         $candidateIds = [];
+        $types .= 'si';
+        $params[] = $binaryCode;
+        $params[] = $candidateLimit;
         try {
-            $statement->bind_param('si', $binaryCode, $candidateLimit);
+            $statement->bind_param($types, ...$params);
             if (!$statement->execute()) {
                 throw new \Exception("Execute failed: " . $statement->error);
             }

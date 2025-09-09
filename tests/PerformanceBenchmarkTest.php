@@ -36,7 +36,7 @@ class PerformanceBenchmarkTest extends BaseVectorTest
             // Perform search test
             echo "Searching for 1 vector among $targetSize...\n";
             $t0 = microtime(true);
-            $results = $vectorTable->search($targetVector, 10);
+            $results = $vectorTable->search($targetVector);
             $elapsed = microtime(true) - $t0;
             echo sprintf("Search completed in %.4f seconds (Memory: %s)\n", $elapsed, $this->getMemoryUsage());
 
