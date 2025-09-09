@@ -370,10 +370,7 @@ class VectorTableTest extends BaseVectorTest
 
     public function testSelectByMetadata(): void {
         // Create table with JSON path indexes for content_type and content_id
-        $tableName = 'select_by_metadata_test';
-        $vectorTable = new \MHz\MysqlVector\VectorTable(self::$mysqli, $tableName . '_' . uniqid(), $this->dimension);
-        $vectorTable->initialize(['$.content_type' => 'ENUM("pdf","doc","txt","html")', '$.content_id' => 'INT']);
-        $this->vectorTables[$vectorTable->getVectorTableName()] = $vectorTable;
+        $vectorTable = $this->makeTable('select_by_metadata_test', $this->dimension, ['$.content_type' => 'ENUM("pdf","doc","txt","html")', '$.content_id' => 'INT']);
         $vectorTable->getConnection()->begin_transaction();
         // Insert vectors with metadata
         $ids = [];
@@ -399,10 +396,7 @@ class VectorTableTest extends BaseVectorTest
 
     public function testSelectByMetadata_UsesExistingIndexesWithNewInstance(): void {
         // First create a table and add indexes
-        $namePrefix = 'select_by_metadata_existing_idx';
-        $tableWithIdx = new \MHz\MysqlVector\VectorTable(self::$mysqli, $namePrefix . '_' . uniqid(), $this->dimension);
-        $tableWithIdx->initialize(['$.content_type' => 'ENUM("pdf","doc","txt","html")', '$.content_id' => 'INT']);
-        $this->vectorTables[$tableWithIdx->getVectorTableName()] = $tableWithIdx;
+        $tableWithIdx = $this->makeTable('select_by_metadata_existing_idx', $this->dimension, ['$.content_type' => 'ENUM("pdf","doc","txt","html")', '$.content_id' => 'INT']);
         // Insert a few rows
         $tableWithIdx->upsert(array_fill(0, $this->dimension, 0.1), ['content_type' => 'pdf', 'content_id' => 111]);
         $tableWithIdx->upsert(array_fill(0, $this->dimension, 0.2), ['content_type' => 'html', 'content_id' => 222]);
@@ -454,9 +448,7 @@ class VectorTableTest extends BaseVectorTest
     }
 
     public function testTypedMetadataIndexingAndSelectByMetadata(): void {
-        $table = 'typed_meta_' . uniqid();
-        $vt = new \MHz\MysqlVector\VectorTable(self::$mysqli, $table, $this->dimension);
-        $vt->initialize([
+        $vt = $this->makeTable('typed_meta', $this->dimension, [
             '$.title' => 'VARCHAR(191)',
             '$.category' => 'ENUM("A","B","C")',
             '$.count' => 'INT',
@@ -465,19 +457,18 @@ class VectorTableTest extends BaseVectorTest
             '$.rating' => 'FLOAT',
             '$.active' => 'BOOLEAN'
         ]);
-        $this->vectorTables[$vt->getVectorTableName()] = $vt;
         $vt->getConnection()->begin_transaction();
 
         // Insert a few rows with typed metadata
-        $id1 = $vt->upsert(array_fill(0, $this->dimension, 0.01), [
+        $vt->upsert(array_fill(0, $this->dimension, 0.01), [
             'title' => 'Doc 1', 'category' => 'A', 'count' => 10, 'timestamp' => 1700000000,
             'price' => 12.34, 'rating' => 4.5, 'active' => true
         ]);
-        $id2 = $vt->upsert(array_fill(0, $this->dimension, 0.02), [
+        $vt->upsert(array_fill(0, $this->dimension, 0.02), [
             'title' => 'Doc 2', 'category' => 'B', 'count' => 20, 'timestamp' => 1700000100,
             'price' => 99.99, 'rating' => 3.0, 'active' => false
         ]);
-        $id3 = $vt->upsert(array_fill(0, $this->dimension, 0.03), [
+        $vt->upsert(array_fill(0, $this->dimension, 0.03), [
             'title' => 'Doc 3', 'category' => 'C', 'count' => 30, 'timestamp' => 1700000200,
             'price' => 7.00, 'rating' => 2.25, 'active' => true
         ]);
@@ -498,7 +489,7 @@ class VectorTableTest extends BaseVectorTest
         try {
             $vt->selectByMetadata(['$.count' => 'abc']);
             $this->fail('Expected InvalidArgumentException for non-numeric integer value');
-        } catch (\InvalidArgumentException $e) {}
+        } catch (\InvalidArgumentException) { /* expected */ }
         // Indexed bigint
         $r = $vt->selectByMetadata(['$.timestamp' => 1700000100]);
         $this->assertCount(1, $r);
@@ -536,11 +527,7 @@ class VectorTableTest extends BaseVectorTest
 
     public function testSelectByMetadata_FallbackJsonExtractTyping(): void
     {
-        $table = 'fallback_meta_' . uniqid();
-        $vt = new \MHz\MysqlVector\VectorTable(self::$mysqli, $table, $this->dimension);
-        // No indexes for the fields we will query to force fallback
-        $vt->initialize();
-        $this->vectorTables[$vt->getVectorTableName()] = $vt;
+        $vt = $this->makeTable('fallback_meta', $this->dimension);
         $vt->getConnection()->begin_transaction();
 
         // Insert rows with non-indexed metadata
@@ -753,6 +740,121 @@ class VectorTableTest extends BaseVectorTest
         $ids = array_column($vt->selectAll(), 'id');
         $vt->batchDelete($ids);
         $this->assertEquals(0, $vt->count());
+
+        $vt->getConnection()->rollback();
+    }
+
+    public function testDeleteByMetadata_Indexed(): void
+    {
+        $vt = $this->makeTable('delete_meta_idx', $this->dimension, [
+            '$.content_type' => 'ENUM("pdf","doc")',
+            '$.content_id'   => 'INT',
+            '$.price'        => 'DECIMAL(10,2)',
+            '$.active'       => 'BOOLEAN',
+        ]);
+        $vt->getConnection()->begin_transaction();
+
+        // Insert rows with typed metadata
+        $vt->upsert(array_fill(0, $this->dimension, 0.01), [
+            'content_type' => 'pdf', 'content_id' => 111, 'price' => 9.99, 'active' => true
+        ]);
+        $vt->upsert(array_fill(0, $this->dimension, 0.02), [
+            'content_type' => 'pdf', 'content_id' => 222, 'price' => 9.99, 'active' => false
+        ]);
+        $vt->upsert(array_fill(0, $this->dimension, 0.03), [
+            'content_type' => 'doc', 'content_id' => 111, 'price' => 19.99, 'active' => true
+        ]);
+        $vt->upsert(array_fill(0, $this->dimension, 0.04), null); // NULL metadata
+
+        $this->assertEquals(4, $vt->count());
+
+        // Delete by indexed equality (enum + int)
+        $deleted = $vt->deleteByMetadata(['$.content_type' => 'pdf', '$.content_id' => 111]);
+        $this->assertEquals(1, $deleted);
+        $this->assertEquals(3, $vt->count());
+
+        // Delete by indexed decimal (allow numeric string)
+        $deleted2 = $vt->deleteByMetadata(['$.price' => '9.99']);
+        $this->assertEquals(1, $deleted2);
+        $this->assertEquals(2, $vt->count());
+
+        // Delete by NULL semantics: matches explicit null path, missing path, and metadata NULL
+        $deleted3 = $vt->deleteByMetadata(['$.any_missing_or_null' => null]);
+        $this->assertEquals(2, $deleted3); // removes id3 (missing path) and id4 (metadata NULL)
+        $this->assertEquals(0, $vt->count());
+
+        $vt->getConnection()->rollback();
+    }
+
+    public function testDeleteByMetadata_FallbackJsonExtractTyping(): void
+    {
+        $vt = $this->makeTable('delete_meta_fallback', $this->dimension);
+        $vt->getConnection()->begin_transaction();
+
+        $vt->upsert(array_fill(0, $this->dimension, 0.11), [
+            'name' => 'Alice', 'score' => 42, 'price' => 12.5, 'active' => true, 'null_field' => null
+        ]);
+        $vt->upsert(array_fill(0, $this->dimension, 0.12), [
+            'name' => 'Bob', 'score' => 7, 'price' => 3.14, 'active' => false
+        ]);
+        $vt->upsert(array_fill(0, $this->dimension, 0.13), [
+            'name' => 'Carol', 'score' => 42, 'price' => 12.5
+        ]);
+
+        $this->assertEquals(3, $vt->count());
+
+        // String equality
+        $this->assertEquals(1, $vt->deleteByMetadata(['$.name' => 'Alice']));
+        $this->assertEquals(2, $vt->count());
+
+        // Integer equality
+        $this->assertEquals(1, $vt->deleteByMetadata(['$.score' => 42])); // removes Carol
+        $this->assertEquals(1, $vt->count());
+
+        // Float equality
+        $this->assertEquals(1, $vt->deleteByMetadata(['$.price' => 3.14])); // removes Bob
+        $this->assertEquals(0, $vt->count());
+
+        $vt->getConnection()->rollback();
+    }
+
+    public function testDeleteByMetadata_NullSemantics(): void
+    {
+        $vt = $this->makeTable('delete_meta_nulls', $this->dimension);
+        $vt->getConnection()->begin_transaction();
+
+        $vt->upsert(array_fill(0, $this->dimension, 0.21), ['chunk' => null]); // explicit null
+        $vt->upsert(array_fill(0, $this->dimension, 0.22), ['other' => 'x']); // missing path
+        $vt->upsert(array_fill(0, $this->dimension, 0.23), null);            // metadata NULL
+        $vt->upsert(array_fill(0, $this->dimension, 0.24), ['chunk' => 'value']); // should remain
+
+        $this->assertEquals(4, $vt->count());
+
+        $deleted = $vt->deleteByMetadata(['$.chunk' => null]);
+        $this->assertEquals(3, $deleted); // id1, id2, id3
+        $this->assertEquals(1, $vt->count());
+
+        $rows = $vt->selectAll();
+        $this->assertCount(1, $rows);
+        $this->assertEquals('value', $rows[0]['metadata']['chunk']);
+
+        $vt->getConnection()->rollback();
+    }
+
+    public function testDeleteByMetadata_EmptyConditions_Throws(): void
+    {
+        $vt = $this->makeTable('delete_meta_empty', $this->dimension);
+        $vt->getConnection()->begin_transaction();
+
+        $vt->upsert(array_fill(0, $this->dimension, 0.31), ['a' => 1]);
+        $this->assertEquals(1, $vt->count());
+
+        try {
+            $vt->deleteByMetadata([]);
+            $this->fail('Expected InvalidArgumentException for empty deleteByMetadata conditions');
+        } catch (\InvalidArgumentException) {
+            $this->assertTrue(true);
+        }
 
         $vt->getConnection()->rollback();
     }

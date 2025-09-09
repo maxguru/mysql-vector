@@ -740,7 +740,7 @@ class VectorTable
     }
 
     /**
-     * Select vectors filtered by JSON metadata using simple AND of equality conditions.
+     * Build a WHERE clause, bind types, and params for metadata conditions.
      *
      * Input shape: associative array of JSON path => value pairs, e.g.:
      *   ['$.content_type' => 'pdf', '$.content_id' => 456, '$.chunk_hash' => null]
@@ -755,15 +755,14 @@ class VectorTable
      * - Otherwise use JSON_EXTRACT fallback and infer JSON primitive type from PHP values.
      *
      * @param array $conditions Associative map of JSON paths to values (ANDed together)
-     * @param int|null $limit Optional LIMIT
-     * @return array Array of results, each containing:
-     *               - 'id' (int)
-     *               - 'metadata' (array|null)
-     * @throws \Exception on SQL preparation/errors or invalid input
+     * @return array Returns an associative array with:
+     *               - 'where' (string): SQL WHERE-clause (without the "WHERE" keyword)
+     *               - 'types' (string): mysqli bind types string for the parameters
+     *               - 'params' (array): parameter values matching the 'types' order
+     * @throws \InvalidArgumentException If conditions are empty, a JSON path is invalid,
+     *                                    or a value type is incompatible with an indexed primitive type.
      */
-    public function selectByMetadata(array $conditions, ?int $limit = null): array
-    {
-        $escapedTableName = $this->escapeIdentifier($this->getVectorTableName());
+    private function buildMetadataWhere(array $conditions): array {
         $metadataIndexMap = $this->getMetadataIndexMap();
 
         $clauses = [];
@@ -854,13 +853,45 @@ class VectorTable
                 }
             }
         }
-        
+
         if (empty($clauses)) {
-            throw new \InvalidArgumentException('selectByMetadata requires at least one valid JSON path => value pair');
+            throw new \InvalidArgumentException('At least one valid JSON path => value pair is required');
         }
 
-        $where = implode(' AND ', $clauses);
-        $sql = "SELECT id, metadata FROM {$escapedTableName} WHERE {$where}";
+        return [
+            'where' => implode(' AND ', $clauses),
+            'types' => $types,
+            'params' => $params,
+        ];
+    }
+
+    /**
+     * Select vectors filtered by JSON metadata using simple AND of equality conditions.
+     *
+     * Input shape: associative array of JSON path => value pairs, e.g.:
+     *   ['$.content_type' => 'pdf', '$.content_id' => 456, '$.chunk_hash' => null]
+     *
+     * Semantics:
+     * - Each entry is treated as equality on the exact JSON path key provided (must start with $)
+     * - For value === null, this matches three cases:
+     *     1) the path exists with an explicit JSON null value
+     *     2) the path is missing from the JSON object
+     *     3) the entire metadata column is NULL
+     * - If a generated column index exists for a path, use it (fast) with type-aware binding based on metadata index map.
+     * - Otherwise use JSON_EXTRACT fallback and infer JSON primitive type from PHP values.
+     *
+     * @param array $conditions Associative map of JSON paths to values (ANDed together)
+     * @param int|null $limit Optional LIMIT
+     * @return array Array of results, each containing:
+     *               - 'id' (int)
+     *               - 'metadata' (array|null)
+     * @throws \Exception on SQL preparation/errors or invalid input
+     */
+    public function selectByMetadata(array $conditions, ?int $limit = null): array {
+        $escapedTableName = $this->escapeIdentifier($this->getVectorTableName());
+        $whereInfo = $this->buildMetadataWhere($conditions);
+        $sql = "SELECT id, metadata FROM {$escapedTableName} WHERE {$whereInfo['where']}";
+
         $useLimit = $limit !== null && $limit > 0;
         if ($useLimit) {
             $sql .= ' LIMIT ?';
@@ -871,6 +902,8 @@ class VectorTable
             throw new \Exception($this->mysqli->error);
         }
         try {
+            $types = $whereInfo['types'];
+            $params = $whereInfo['params'];
             if ($useLimit) {
                 $types .= 'i';
                 $params[] = $limit;
@@ -893,6 +926,49 @@ class VectorTable
             $stmt->close();
         }
         return $result;
+    }
+
+    /**
+     * Delete vectors filtered by JSON metadata using simple AND of equality conditions.
+     *
+     * Input shape: associative array of JSON path => value pairs, e.g.:
+     *   ['$.content_type' => 'pdf', '$.content_id' => 456, '$.chunk_hash' => null]
+     *
+     * Semantics:
+     * - Each entry is treated as equality on the exact JSON path key provided (must start with $)
+     * - For value === null, this matches three cases:
+     *     1) the path exists with an explicit JSON null value
+     *     2) the path is missing from the JSON object
+     *     3) the entire metadata column is NULL
+     * - If a generated column index exists for a path, use it (fast) with type-aware binding based on metadata index map.
+     * - Otherwise use JSON_EXTRACT fallback and infer JSON primitive type from PHP values.
+     *
+     * @param array $conditions Associative map of JSON paths to values (ANDed together)
+     * @return int Number of deleted rows
+     * @throws \Exception on SQL errors or invalid input
+     */
+    public function deleteByMetadata(array $conditions): int {
+        $escapedTableName = $this->escapeIdentifier($this->getVectorTableName());
+        $whereInfo = $this->buildMetadataWhere($conditions);
+        $sql = "DELETE FROM {$escapedTableName} WHERE {$whereInfo['where']}";
+
+        $stmt = $this->mysqli->prepare($sql);
+        if (!$stmt) {
+            throw new \Exception($this->mysqli->error);
+        }
+        try {
+            $types = $whereInfo['types'];
+            $params = $whereInfo['params'];
+            if ($types !== '') {
+                $stmt->bind_param($types, ...$params);
+            }
+            if (!$stmt->execute()) {
+                throw new \Exception('Execute failed: ' . $stmt->error);
+            }
+            return (int)$stmt->affected_rows;
+        } finally {
+            $stmt->close();
+        }
     }
 
     /**

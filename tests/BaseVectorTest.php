@@ -84,9 +84,10 @@ abstract class BaseVectorTest extends TestCase
      * Create a new VectorTable instance with automatic cleanup
      * @param string $tableNamePrefix Prefix for the table name (will be made unique)
      * @param int $dimension Vector dimension (defaults to 384)
+     * @param array $metadataJsonPathIndexes Optional JSON-path => SQL-type map for generated columns
      * @return VectorTable The created and initialized VectorTable instance
      */
-    protected function makeTable(string $tableNamePrefix, int $dimension = 384): VectorTable
+    protected function makeTable(string $tableNamePrefix, int $dimension = 384, array $metadataJsonPathIndexes = []): VectorTable
     {
         // Create unique table name to avoid conflicts
         $uniqueTableName = $tableNamePrefix . '_' . uniqid();
@@ -94,9 +95,9 @@ abstract class BaseVectorTest extends TestCase
         // Defensive cleanup in case previous test was interrupted
         $this->cleanupDatabaseArtifacts(self::$mysqli, $uniqueTableName, $dimension);
 
-        // Create new VectorTable instance and initialize only tables (functions already initialized)
+        // Create new VectorTable instance and initialize table (with optional metadata indexes)
         $vectorTable = new VectorTable(self::$mysqli, $uniqueTableName, $dimension);
-        $vectorTable->initialize();
+        $vectorTable->initialize($metadataJsonPathIndexes);
 
         // Store in array for automatic cleanup
         $this->vectorTables[$uniqueTableName] = $vectorTable;
