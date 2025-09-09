@@ -4,11 +4,16 @@ namespace MHz\MysqlVector;
 
 class VectorTable
 {
-    private string $name;
-    private int $dimension;
-    private string $engine;
-    private \mysqli $mysqli;
-    private ?array $metadataIndexMap = null;
+    /** @var string */
+    private $name;
+    /** @var int */
+    private $dimension;
+    /** @var string */
+    private $engine;
+    /** @var \mysqli */
+    private $mysqli;
+    /** @var array|null */
+    private $metadataIndexMap = null;
 
     // Maximum supported vector dimensions, currently limited by VARBINARY storage
     // `normalized_vector` column uses VARBINARY(4 * dimension); VARBINARY max length in MySQL is 65,535 bytes
@@ -1187,7 +1192,9 @@ class VectorTable
         }
 
         // Normalize: v_normalized = v / ||v||
-        return array_map(fn($component) => $component / $magnitude, $vector);
+        return array_map(function ($component) use ($magnitude) {
+            return $component / $magnitude;
+        }, $vector);
     }
 
     /**

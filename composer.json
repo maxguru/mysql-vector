@@ -22,8 +22,10 @@
     }
   ],
   "require": {
-    "php": ">=8.0",
-    "ext-mysqli": "*"
+    "php": ">=7.2",
+    "ext-mysqli": "*",
+    "ext-json": "*",
+    "ext-ctype": "*"
   },
 
   "autoload": {

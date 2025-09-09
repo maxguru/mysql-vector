@@ -40,9 +40,12 @@ Normalized vector storage uses VARBINARY(4 * dimension). MySQL's maximum VARBINA
 - Optional per-vector `metadata` stored as JSON included in retrieval and search results.
 
 ## Requirements
-- PHP 8.0 or higher.
+- PHP 7.2 or higher.
 - MySQL 5.7.6 or higher / MariaDB 10.2.0 or higher.
-- A MySQLi extension for PHP.
+- Required PHP extensions:
+  - mysqli
+  - json
+  - ctype
 
 ## Installation
 1. Ensure that PHP and MySQL are installed and properly configured on your system.
