@@ -51,9 +51,9 @@ Normalized vector storage uses VARBINARY(4 * dimension). MySQL's maximum VARBINA
 1. Ensure that PHP and MySQL are installed and properly configured on your system.
 2. Install the library using [Composer](https://getcomposer.org/).
 
-   ```bash
-   composer require allanpichardo/mysql-vector
-   ```
+```bash
+composer require maxguru/mysql-vector
+```
 
 ## Usage
 
