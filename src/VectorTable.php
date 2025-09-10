@@ -1205,7 +1205,7 @@ class VectorTable
         }
 
         // Normalize: v_normalized = v / ||v||
-        return array_map(function ($component) use ($magnitude) {
+        return array_map(static function($component) use ($magnitude) {
             return $component / $magnitude;
         }, $vector);
     }
