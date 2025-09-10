@@ -1031,13 +1031,15 @@ class VectorTable
      *                                      - Large result sets (n>33): 3x minimum multiplier for efficiency
      *                                      This balances accuracy vs performance. When provided, uses the
      *                                      specified multiplier directly. Must be positive.
+     * @param float|null $minSimilarity Optional minimum cosine similarity threshold [-1.0, 1.0].
+     *                                  When provided, results with similarity < $minSimilarity are not returned.
      * @return array Array of results, each containing:
      *               - 'id': Vector ID
      *               - 'similarity': Cosine similarity [-1, 1]
      *               - 'metadata': Associated metadata (array|null)
      * @throws \Exception If database operations fail or invalid input
      */
-    public function search(array $vector, ?array $conditions = null, int $n = 10, ?int $candidateMultiplier = null): array
+    public function search(array $vector, ?array $conditions = null, int $n = 10, ?int $candidateMultiplier = null, ?float $minSimilarity = null): array
     {
         // Input validation
         if (empty($vector)) {
@@ -1054,6 +1056,10 @@ class VectorTable
 
         if ($candidateMultiplier !== null && $candidateMultiplier <= 0) {
             throw new \InvalidArgumentException("Candidate multiplier must be positive when provided");
+        }
+
+        if ($minSimilarity !== null && ($minSimilarity < -1.0 || $minSimilarity > 1.0)) {
+            throw new \InvalidArgumentException("minSimilarity must be within [-1.0, 1.0]");
         }
 
         $escapedTableName = $this->escapeIdentifier($this->getVectorTableName());
@@ -1141,12 +1147,19 @@ class VectorTable
             $results = array_slice($results, 0, $n, true);
         }
 
+        // Optional min-similarity filtering (after final top-N limit)
+        if ($minSimilarity !== null) {
+            $results = array_filter($results, static function($r) use ($minSimilarity) {
+                return $r['similarity'] >= $minSimilarity;
+            });
+        }
+
         // Avoid invalid SQL
         if (empty($results)) {
             return [];
         }
 
-        // Fetch metadata for top-N only
+        // Fetch metadata
         $ids = [];
         foreach ($results as $r) { $ids[] = (int)$r['id']; }
         $sqlMeta = "SELECT id, metadata FROM {$escapedTableName} WHERE id IN (" . implode(',', $ids) . ")";

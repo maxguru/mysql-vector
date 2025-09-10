@@ -1078,4 +1078,76 @@ class VectorTableTest extends BaseVectorTest
         $newId = $vt->upsert(array_fill(0, $this->dimension, 0.01));
         $this->assertIsInt($newId);
     }
+
+    public function testSearch_MinSimilarityFilter_Basic(): void
+    {
+        $vt = $this->makeTable('search_min_sim_basic', $this->dimension);
+        $vt->getConnection()->begin_transaction();
+
+        $q = array_fill(0, $this->dimension, 0.5);
+        $idExact = $vt->upsert(array_fill(0, $this->dimension, 0.5));
+
+        // Alternating signs ~ orthogonal to all-positive query
+        $alt = [];
+        for ($i = 0; $i < $this->dimension; $i++) { $alt[$i] = ($i % 2 === 0) ? 0.5 : -0.5; }
+        $vt->upsert($alt);
+
+        // Mostly same direction but with a small negative portion => high but < 1 similarity
+        $partial = array_fill(0, $this->dimension, 0.5);
+        for ($i = 0; $i < 10; $i++) { $partial[$i] = -0.5; }
+        $idPartial = $vt->upsert($partial);
+
+        // High threshold keeps only the exact/same-direction vector(s)
+        $rHigh = $vt->search($q, null, 10, null, 0.95);
+        $this->assertNotEmpty($rHigh);
+        foreach ($rHigh as $r) { $this->assertGreaterThanOrEqual(0.95, $r['similarity']); }
+        $this->assertEquals($idExact, $rHigh[0]['id']);
+
+        // Lower threshold allows the partial-negative vector
+        $rMid = $vt->search($q, null, 10, null, 0.90);
+        $this->assertNotEmpty($rMid);
+        foreach ($rMid as $r) { $this->assertGreaterThanOrEqual(0.90, $r['similarity']); }
+        $ids = array_column($rMid, 'id');
+        $this->assertContains($idExact, $ids);
+        $this->assertContains($idPartial, $ids);
+
+        $vt->getConnection()->rollback();
+    }
+
+    public function testSearch_MinSimilarityFilter_InvalidRange_Throws(): void
+    {
+        $vt = $this->makeTable('search_min_sim_invalid', $this->dimension);
+        $vt->getConnection()->begin_transaction();
+
+        $q = array_fill(0, $this->dimension, 0.5);
+        $vt->upsert(array_fill(0, $this->dimension, 0.5));
+
+        try {
+            $vt->search($q, null, 5, null, 1.1);
+            $this->fail('Expected InvalidArgumentException for out-of-range minSimilarity');
+        } catch (\InvalidArgumentException) {
+            $this->assertTrue(true);
+        } finally {
+            $vt->getConnection()->rollback();
+        }
+    }
+
+    public function testSearch_MinSimilarityFilter_AllFiltered_ReturnsEmpty(): void
+    {
+        $vt = $this->makeTable('search_min_sim_all_filtered', $this->dimension);
+        $vt->getConnection()->begin_transaction();
+
+        $q = array_fill(0, $this->dimension, 0.5);
+        // Insert a vector roughly orthogonal to q
+        $alt = [];
+        for ($i = 0; $i < $this->dimension; $i++) { $alt[$i] = ($i % 2 === 0) ? 0.5 : -0.5; }
+        $vt->upsert($alt);
+
+        $r = $vt->search($q, null, 10, null, 0.10);
+        $this->assertIsArray($r);
+        $this->assertCount(0, $r);
+
+        $vt->getConnection()->rollback();
+    }
+
 }

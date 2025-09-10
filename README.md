@@ -173,6 +173,9 @@ $similarVectors = $vectorTable->search(
 // Using 1 disables the adaptive expansion and uses exactly topN candidates in Stage‑1
 $similarVectors = $vectorTable->search($vector, null, $topN, 1);
 
+// Minimum similarity threshold: only return results with similarity >= 0.3
+$similarVectors = $vectorTable->search($vector, null, 10, null, 0.3);
+
 // Results include:
 // - 'id': Vector ID
 // - 'similarity': Cosine similarity score
