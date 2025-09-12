@@ -342,7 +342,7 @@ class CosineAccuracyValidationTest extends BaseVectorTest
             $vectorId = $vectorTable->upsert($vector2);
 
             // Search for vector1 (should find vector2)
-            $results = $vectorTable->search($vector1, 1);
+            $results = $vectorTable->search($vector1, null, 1);
 
             $this->assertNotEmpty($results, "Search should return results");
             $this->assertEquals($vectorId, $results[0]['id'], "Search should find the inserted vector");
