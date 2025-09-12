@@ -14,6 +14,9 @@ class VectorTable
     private $mysqli;
     /** @var array|null */
     private $metadataIndexMap = null;
+    /** @var array|null Cached server type and version */
+    private $serverInfo = null;
+
 
     // Maximum supported vector dimensions, currently limited by VARBINARY storage
     // `normalized_vector` column uses VARBINARY(4 * dimension); VARBINARY max length in MySQL is 65,535 bytes
@@ -22,6 +25,40 @@ class VectorTable
 
     // Safe default for utf8mb4 in MySQL 5.7: 191 characters (191*4=764 bytes < 767-byte limit)
     private const INDEX_PREFIX_LENGTH = 191;
+
+    /**
+     * Database compatibility by feature -> product -> properties (e.g., min_version).
+     * The min_version denotes the minimum server version where the feature is supported.
+     */
+    private const DB_COMPAT = [
+        // Virtual generated columns with index support
+        // MySQL:
+        //   - Generated columns introduced in 5.7.6: https://dev.mysql.com/doc/relnotes/mysql/5.7/en/news-5-7-6.html
+        //   - InnoDB secondary indexes on VIRTUAL generated columns added in 5.7.8: https://dev.mysql.com/doc/relnotes/mysql/5.7/en/news-5-7-8.html
+        //   - Manual states: "InnoDB supports secondary indexes on virtual columns": https://dev.mysql.com/doc/en/create-table-generated-columns.html
+        // MariaDB:
+        //   - Virtual/generated columns exist since 5.2.0 (feature added): https://mariadb.com/kb/en/mariadb-520-release-notes/
+        //   - Generated Columns doc: https://mariadb.com/docs/server/reference/sql-statements/data-definition/create/generated-columns
+        //   - We use JSON_EXTRACT/JSON_UNQUOTE inside generated columns, which requires JSON support added in 10.2.x
+        //     (JSON data type is an alias of LONGTEXT and JSON functions were introduced in 10.2; see: https://mariadb.com/docs/server/reference/data-types/string-data-types/json)
+        //   - We require MySQL >= 5.7.8 and MariaDB >= 10.2.7 for the specific usage here (virtual generated columns + JSON functions + indexing).
+        'VirtualGeneratedColumns' => [
+            'mysql'   => ['min_version' => '5.7.8'],
+            'mariadb' => ['min_version' => '10.2.7'],
+        ],
+
+        // Explicit CAST/CONVERT to FLOAT/DOUBLE/REAL in expressions
+        // MySQL: Added in 8.0.17 - "supports explicit casts to DOUBLE, FLOAT, and REAL" (release notes):
+        //   https://dev.mysql.com/doc/relnotes/mysql/8.0/en/news-8-0-17.html
+        //   Reference: https://dev.mysql.com/doc/en/cast-functions.html
+        // MariaDB: Effective for CAST(... AS FLOAT) starting in 10.3.16 (MDEV-16872):
+        //   10.3.16 changelog: https://mariadb.com/docs/release-notes/community-server/changelogs/changelogs-mariadb-10-3-series/mariadb-10316-changelog
+        //   MDEV-16872:      https://jira.mariadb.org/browse/MDEV-16872
+        'CastToFloat' => [
+            'mysql'   => ['min_version' => '8.0.17'],
+            'mariadb' => ['min_version' => '10.3.16'],
+        ],
+    ];
 
     /**
      * Instantiate a new VectorTable object.
@@ -71,24 +108,46 @@ class VectorTable
     }
 
     /**
-     * Determine support for virtual generated columns with indexes
+     * Parse server_info to determine server type and version.
+     * Returns ['type' => 'mysql'|'mariadb', 'version' => 'x.y.z'] or defaults to mysql/0.0.0.
+     * Result is cached in $this->serverInfo for subsequent calls.
      */
-    private function supportsVirtualGeneratedColumns(): bool
+    private function getServerTypeAndVersion(): array
     {
-        $info = $this->mysqli->server_info;
-        $isMaria = stripos($info, 'mariadb') !== false;
-        if ($isMaria) {
-            // Extract version before -MariaDB
-            if (preg_match('/(\d+\.\d+\.\d+)/i', $info, $m)) {
-                return version_compare($m[1], '10.2.0', '>=');
+        if ($this->serverInfo === null) {
+            $info = (string)$this->mysqli->server_info;
+            $type = (stripos($info, 'mariadb') !== false) ? 'mariadb' : 'mysql';
+            $version = '0.0.0';
+            if (preg_match('/(\d+\.\d+\.\d+)/', $info, $m)) {
+                $version = $m[1];
             }
+            $this->serverInfo = ['type' => $type, 'version' => $version];
+        }
+        return $this->serverInfo;
+    }
+
+    /**
+     * Check a feature support flag from DB_COMPAT for current server type and version.
+     * Returns true iff version >= min_version (inclusive).
+     */
+    private function isFeatureSupported(string $feature): bool
+    {
+        $sv = $this->getServerTypeAndVersion();
+        $type = $sv['type'];
+        $version = $sv['version'];
+        $feat = self::DB_COMPAT[$feature] ?? null;
+        if (!$feat) {
             return false;
         }
-        // MySQL
-        if (preg_match('/(\d+\.\d+\.\d+)/', $info, $m)) {
-            return version_compare($m[1], '5.7.6', '>=');
+        $entry = $feat[$type] ?? null;
+        if (!$entry) {
+            return false;
         }
-        return false;
+        $min = $entry['min_version'] ?? '0.0.0';
+        if (version_compare($version, $min, '<')) {
+            return false;
+        }
+        return true;
     }
 
     /**
@@ -276,13 +335,13 @@ class VectorTable
         $metadataColsIndexes = "";
         if (!empty($metadataJsonPathIndexes)) {
 
-            if (!$this->supportsVirtualGeneratedColumns()) {
-                throw new \Exception('Virtual generated columns with indexes require MySQL >= 5.7.6 or MariaDB >= 10.2.0');
+            if (!$this->isFeatureSupported('VirtualGeneratedColumns')) {
+                throw new \Exception('Virtual generated columns with indexes are not supported on this server');
             }
 
             $metadataColumns = [];
             $metadataIndexes = [];
-            
+
             foreach ($metadataJsonPathIndexes as $path => $sqlTypeSpec) {
                 // Validate JSON path
                 $path = $this->validateJsonPath($path);
@@ -316,7 +375,13 @@ class VectorTable
                         $expr = "CAST($ju AS SIGNED)";
                         break;
                     case 'float':
-                        $expr = "CAST($ju AS {$sqlType})";
+                        if ($this->isFeatureSupported('CastToFloat') || preg_match('/^\s*(DECIMAL|NUMERIC)\b/i', $sqlType)) {
+                            // Server allows CAST to FLOAT/DOUBLE/REAL or declared type is DECIMAL/NUMERIC; cast directly to declared type
+                            $expr = "CAST($ju AS {$sqlType})";
+                        } else {
+                            // Server does not allow CAST to FLOAT/DOUBLE/REAL in expressions
+                            $expr = "CAST($ju AS DECIMAL(65,15))";
+                        }
                         break;
                     default: // string-like
                         $expr = $ju;
