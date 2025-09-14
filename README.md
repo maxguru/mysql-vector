@@ -28,13 +28,28 @@ Normalized vectors are stored as 32-bit IEEE-754 floats (float32) in little-endi
 Binary quantized codes are stored in the `binary_code` VARBINARY column. Storage requirements are 1 bit per dimension, so a 384-dimensional vector requires 48 bytes.
 
 ### High Dimension Support
-Normalized vector storage uses VARBINARY(4 * dimension). MySQL's maximum VARBINARY length is 65,535 bytes, so the maximum supported dimension for float32 storage is floor(65,535 / 4) = 16,383. Binary quantized codes use VARBINARY(ceil(dimension/8)) for Stage 1 filtering. While this could theoretically support up to 524,280 bits, the effective limit is governed by the normalized vector storage (16,383 dimensions).
+Normalized vector storage uses VARBINARY(4 * dimension) and binary quantized codes use VARBINARY(ceil(dimension/8)). InnoDB enforces a 65,535‑byte maximum row size for the clustered record; long JSON values are stored off‑page but a fixed in‑row pointer remains. Our exact in‑row accounting with ROW_FORMAT=DYNAMIC is:
+
+- normalized_vector: 4*d bytes + 2‑byte length prefix
+- binary_code: ceil(d/8) bytes + 2‑byte length prefix
+- id: 4 bytes
+- metadata (JSON): fully off‑page with a 20‑byte in‑row pointer
+- InnoDB record overhead: 19 bytes = 5‑byte record header + 6‑byte DB_TRX_ID + 7‑byte DB_ROLL_PTR + 1‑byte NULL‑bitmap (3 nullable columns)
+
+Inequality: (4*d + 2) + (ceil(d/8) + 2) + 4 + 20 + 19 ≤ 65535 → 4*d + ceil(d/8) + 47 ≤ 65535. The largest d satisfying this is 15,875, giving 4*15,875 + ceil(15,875/8) = 63,500 + 1,985 = 65,485 and total 65,485 + 47 = 65,532 (3‑byte headroom). Therefore the safe **maximum dimension is 15,875**.
+
+Notes and references:
+- DYNAMIC row format stores long VARBINARY/VARCHAR/BLOB/TEXT values fully off‑page with a 20‑byte pointer; COMPACT stores a 768‑byte prefix + 20‑byte pointer. MariaDB’s InnoDB follows the same behavior as MySQL’s InnoDB for row formats and off‑page storage.
+- The 20‑byte pointer size and InnoDB record overhead (5‑byte header + 6‑byte DB_TRX_ID + 7‑byte DB_ROLL_PTR) are documented for MySQL and apply equally to MariaDB’s InnoDB implementation.
+- NULL‑bitmap is 1 bit per nullable column, rounded up to a full byte; our schema has three nullable columns: normalized_vector, binary_code, metadata.
+
+While the binary code could theoretically scale to 524,280 bits, the effective limit is governed by the total row size with normalized_vector + binary_code.
 
 ## Features
-- Management of the database vector table.
+- Management of the database vector table (created with ENGINE=InnoDB and ROW_FORMAT=DYNAMIC).
 - Support for multiple vector tables within a single database.
 - Vector operations: insertion, deletion, retrieval, and search by cosine similarity.
-- Support for high-dimensional vectors (up to 16,383 dimensions).
+- Support for high-dimensional vectors (up to 15,875 dimensions).
 - Batch insert operations for efficient bulk vector storage.
 - Batch delete operations to remove many vectors efficiently.
 - Optional per-vector `metadata` stored as JSON included in retrieval and search results.
@@ -65,9 +80,7 @@ use MHz\MysqlVector\VectorTable;
 $mysqli = new mysqli("hostname", "username", "password", "database");
 $tableName = "my_vector_table";
 $dimension = 384;
-$engine = 'InnoDB';
-
-$vectorTable = new VectorTable($mysqli, $tableName, $dimension, $engine);
+$vectorTable = new VectorTable($mysqli, $tableName, $dimension);
 ```
 
 ### Setting Up the Vector Table in MySQL

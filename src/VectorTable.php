@@ -8,8 +8,6 @@ class VectorTable
     private $name;
     /** @var int */
     private $dimension;
-    /** @var string */
-    private $engine;
     /** @var \mysqli */
     private $mysqli;
     /** @var array|null */
@@ -17,11 +15,18 @@ class VectorTable
     /** @var array|null Cached server type and version */
     private $serverInfo = null;
 
-
-    // Maximum supported vector dimensions, currently limited by VARBINARY storage
-    // `normalized_vector` column uses VARBINARY(4 * dimension); VARBINARY max length in MySQL is 65,535 bytes
-    // maximum supported dimensions for float32 storage = floor(65535 bytes / 4 bytes per float32) = 16383
-    public const MAX_DIMENSIONS = 16383;
+    // Maximum supported vector dimensions considering InnoDB row-size limit (65,535 bytes per row)
+    // Row components counted in-row:
+    //   - normalized_vector VARBINARY(4*d)  -> 4*d bytes + 2-byte length prefix
+    //   - binary_code VARBINARY(ceil(d/8))  -> ceil(d/8) bytes + 2-byte length prefix
+    //   - id INT UNSIGNED                   -> 4 bytes
+    //   - metadata JSON                     -> off-page, but 20-byte pointer is stored in-row (DYNAMIC row format)
+    //   - InnoDB record overhead            -> 19 bytes (5-byte header + 6-byte DB_TRX_ID + 7-byte DB_ROLL_PTR + 1-byte NULL-bitmap for 3 nullable columns)
+    // Safe cap derived from: (4*d + 2) + (ceil(d/8) + 2) + 4 + 20 + 19 <= 65535
+    // Solving: 4*d + ceil(d/8) + 47 <= 65535 -> 4*d + ceil(d/8) <= 65488
+    // For d=15875: 4*15875 + ceil(15875/8) = 63500 + 1985 = 65485 <= 65488
+    // Chosen safe maximum dimension: 15,875 (fits with 3-byte margin on MySQL/MariaDB)
+    public const MAX_DIMENSIONS = 15875;
 
     // Safe default for utf8mb4 in MySQL 5.7: 191 characters (191*4=764 bytes < 767-byte limit)
     private const INDEX_PREFIX_LENGTH = 191;
@@ -65,10 +70,9 @@ class VectorTable
      * @param \mysqli $mysqli The mysqli connection
      * @param string $name Name of the table.
      * @param int $dimension Dimension of the vectors.
-     * @param string $engine The storage engine to use for the table
      * @throws \InvalidArgumentException If dimension exceeds maximum supported value
      */
-    public function __construct(\mysqli $mysqli, string $name, int $dimension = 384, string $engine = 'InnoDB')
+    public function __construct(\mysqli $mysqli, string $name, int $dimension = 384)
     {
         if ($dimension <= 0) {
             throw new \InvalidArgumentException("Dimension must be a positive integer, got $dimension");
@@ -81,7 +85,6 @@ class VectorTable
         $this->mysqli = $mysqli;
         $this->name = $name;
         $this->dimension = $dimension;
-        $this->engine = $engine;
     }
 
     /**
@@ -326,7 +329,6 @@ class VectorTable
         // Build all SQL statements for single multi-query execution with proper escaping
         $binaryCodeLengthInBytes = ceil($this->dimension / 8);
         $escapedVectorTableName = $this->escapeIdentifier($this->getVectorTableName());
-        $engine = $this->escapeIdentifier($this->engine);
 
         $normalizedVectorLengthInBytes = 4 * $this->dimension; // float32 per component
 
@@ -415,7 +417,7 @@ class VectorTable
                 binary_code VARBINARY({$binaryCodeLengthInBytes}),
                 metadata JSON DEFAULT NULL
                 {$metadataColsIndexes}
-            ) ENGINE={$engine};
+            ) ENGINE=InnoDB ROW_FORMAT=DYNAMIC;
         ";
 
         if (!$this->mysqli->multi_query($queries)) {
