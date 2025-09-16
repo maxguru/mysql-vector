@@ -114,7 +114,7 @@ class PerformanceBenchmarkTest extends BaseVectorTest
                 echo "    Inserted $inserted/$count vectors (Memory: " . $this->getMemoryUsage() . ")\n";
             }
         }
-        echo "  ✓ Completed inserting $count vectors (including graph building)\n";
+        echo "  ✓ Completed inserting $count vectors\n";
     }
 
     /**
