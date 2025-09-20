@@ -13,14 +13,26 @@ Vectors are binary quantized upon insertion into the database to optimize search
 
 This library is suitable for datasets up to 1,000,000 vectors. For larger datasets, consider using a dedicated vector database such as [Qdrant](https://qdrant.tech/).
 
-Search Benchmarks (384-dimensional vectors, MySQL 5.7):
+Search Benchmarks (384-dimensional vectors, MySQL 8.0.40):
 Vectors | Time (seconds)
 --------|---------------
-100     | 0.0035
-1000    | 0.0043
-10000   | 0.0109
-100000  | 0.0748
-1000000 | 1.1343
+100     | 0.0036
+1000    | 0.0048
+10000   | 0.0104
+100000  | 0.0606
+1000000 | 1.3893
+
+### Performance Degradation on MariaDB and MySQL 5.7
+MariaDB's native bitwise XOR operator (^) (as well as one in MySQL 5.7) is limited to 64-bit integers. Unlike MySQL 8.0+ which added support for bit operations on binary string types, MariaDB and MySQL 5.7 still implicitly casts operands to a BIGINT for bitwise operations. Additionally, BIT_COUNT(expr) has similar issues on MariaDB and MySQL 5.7. This means that binary code longer than 64 bits is truncated and the Hamming distance is incorrect. We implement a workaround (chunked popcount fallback) in the library to correctly compute the Hamming distance on MariaDB and MySQL 5.7, however, it has a significant performance overhead.
+
+Search Benchmarks (384-dimensional vectors):
+Vectors | MySQL 5.7.42 | MariaDB 10.2.44
+--------|--------------|-----------------
+100     | 0.0037       | 0.0040
+1000    | 0.0060       | 0.0077
+10000   | 0.0335       | 0.0349
+100000  | 0.2891       | 0.3050
+1000000 | 3.3692       | 3.6693
 
 ## Storage Efficiency
 Normalized vectors are stored as 32-bit IEEE-754 floats (float32) in little-endian order inside the `normalized_vector` VARBINARY column. Round-trip encoding/decoding to and from binary can introduce very small precision differences compared to 64-bit doubles; typical tolerances are around 1e-6 when comparing vectors after storage/retrieval. This precision is sufficient for cosine-similarity/dot-product ranking in typical embedding-based applications and allows significantly smaller storage and better performance than 64-bit doubles. Storing 4 bytes per dimension (instead of 8 bytes) allows 2x higher limit on dimensions and halves storage and network costs, which improves performance for insert, read, and re-ranking, while still maintaining sufficient accuracy for similarity search purposes.

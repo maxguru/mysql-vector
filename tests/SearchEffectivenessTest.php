@@ -5,19 +5,15 @@ namespace MHz\MysqlVector\Tests;
 use MHz\MysqlVector\VectorTable;
 
 /**
- * SearchEffectivenessTest - Semantic search quality validation for MySQL Vector library
+ * SearchEffectivenessTest - Semantic search quality validation
  *
- * This test validates the search effectiveness of the MySQL Vector library by testing
- * semantic similarity search quality and ranking accuracy.
- *
- * ## Purpose
- * Validates that the vector search algorithm correctly identifies and ranks semantically
- * similar content. This is a sanity check to ensure the library works well for vector search.
+ * This test class validates the search effectiveness and accuracy of the VectorTable::search() method.
  *
  * ## Features
  * - **Search Quality Validation**: Verifies that semantically similar content ranks higher than unrelated content
  * - **Semantic Category Testing**: Tests across all available categories dynamically loaded from test data
  * - **Ranking Quality Assertions**: Ensures more similar content consistently ranks higher
+ * - **Ground Truth Verification**: Compares search results against exact cosine similarity search results computed purely in PHP
  * - **Edge Case Testing**: Tests exact matches, partial matches, and unrelated queries
  * - **Pre-generated Vectors**: Uses high-quality 3072-dimension vectors for consistent testing
  * - **Zero External Dependencies**: All test data self-contained with pre-computed vectors
@@ -50,7 +46,7 @@ use MHz\MysqlVector\VectorTable;
  *   "usage": ["semantic_similarity"]
  * }
  * ```
- *
+ * 
  */
 
 class SearchEffectivenessTest extends BaseVectorTest
@@ -336,6 +332,119 @@ class SearchEffectivenessTest extends BaseVectorTest
 
         echo "✓ Semantic similarity success rate meets expectations\n";
         echo "✓ Semantic similarity search test completed\n\n";
+
+        // Clean up test data
+        $this->cleanupVectorData($vectorTable);
+    }
+
+    /**
+     * Test: VectorTable::search correctness vs ground truth
+     * Compares search() results against exact computed cosine similarities using VectorTable::cosim() and PHP's usort().
+     * Uses the same semantic test cases as testSemanticSimilaritySearch.
+     */
+    public function testSearchMatchesGroundTruth(): void
+    {
+        echo "=== Search Correctness vs Ground Truth ===\n";
+
+        // Create VectorTable and load semantic_similarity data
+        $vectorTable = $this->makeTable('correctness_validation_test', $this->vectorDimension);
+        $this->setupVectorData($vectorTable, 'semantic_similarity');
+
+        // Build test cases
+        $semanticTestCases = [];
+        $targetCategories = $this->getAvailableCategories();
+        foreach ($targetCategories as $category) {
+            $categoryEntries = $this->getVectorsByCategory($category);
+            foreach ($categoryEntries as $entry) {
+                if (isset($entry['usage']) && in_array('semantic_similarity', $entry['usage'])) {
+                    $semanticTestCases[] = [
+                        'query' => $entry['text'],
+                        'semantic_category' => $entry['semantic_category'],
+                        'entry' => $entry,
+                    ];
+                    break; // one per category keeps runtime reasonable
+                }
+            }
+        }
+
+        $allStored = $this->getVectorsByUsage('semantic_similarity');
+        $this->assertNotEmpty($allStored, 'Expected non-empty stored vector set for semantic_similarity');
+
+        $topN = 10;
+        $epsilon = 1e-6;
+
+        foreach ($semanticTestCases as $case) {
+            echo "Query: '" . $case['query'] . "'\n";
+            $queryVector = $case['entry']['vector'];
+
+            // Database search results
+            $dbResults = $vectorTable->search($queryVector, null, $topN);
+            $this->assertNotEmpty($dbResults, 'search() should return results');
+
+            // Ground truth: cosine similarity against all stored vectors (exact)
+            $gt = [];
+            foreach ($allStored as $idx => $entry) {
+                $gt[] = [
+                    'test_index' => $idx,
+                    'similarity' => $vectorTable->cosim($queryVector, $entry['vector']),
+                    'text' => $entry['text'],
+                ];
+            }
+            usort($gt, static function($a, $b) {
+                if ($a['similarity'] === $b['similarity']) return 0;
+                return ($a['similarity'] < $b['similarity']) ? 1 : -1;
+            });
+            $gtTop = array_slice($gt, 0, min($topN, count($gt)));
+
+            // Build comparable sequences
+            $dbTopCount = min($topN, count($dbResults));
+            $this->assertSame($dbTopCount, count($gtTop), 'Top-N counts should match');
+
+            $dbIndices = [];
+            $dbSims = [];
+            for ($i = 0; $i < $dbTopCount; $i++) {
+                $this->assertArrayHasKey('metadata', $dbResults[$i], 'Result missing metadata');
+                $this->assertArrayHasKey('similarity', $dbResults[$i], 'Result missing similarity');
+                $this->assertArrayHasKey('test_index', $dbResults[$i]['metadata'], 'Metadata missing test_index');
+                $dbIndices[] = $dbResults[$i]['metadata']['test_index'];
+                $dbSims[] = $dbResults[$i]['similarity'];
+            }
+
+            $gtIndices = array_column($gtTop, 'test_index');
+            $gtSims = array_column($gtTop, 'similarity');
+
+            // Validate order: non-increasing similarity sequence from search()
+            for ($i = 0; $i < $dbTopCount - 1; $i++) {
+                $this->assertGreaterThanOrEqual(
+                    $dbSims[$i+1] - $epsilon,
+                    $dbSims[$i],
+                    "Results must be sorted by similarity (desc) at positions $i and " . ($i+1)
+                );
+            }
+
+            // Validate that the top-N sets match (ignoring tie ordering)
+            $sortedDbIdx = $dbIndices; sort($sortedDbIdx);
+            $sortedGtIdx = $gtIndices; sort($sortedGtIdx);
+            $this->assertSame(
+                $sortedGtIdx,
+                $sortedDbIdx,
+                'Top-N result identity must match ground truth (set equality)'
+            );
+
+            // Validate similarity values within tolerance (as multisets)
+            $sortedDbSims = $dbSims; rsort($sortedDbSims);
+            $sortedGtSims = $gtSims; rsort($sortedGtSims);
+            $this->assertSame(count($sortedGtSims), count($sortedDbSims), 'Similarity list lengths must match');
+            for ($i = 0; $i < count($sortedDbSims); $i++) {
+                $this->assertLessThanOrEqual(
+                    $epsilon,
+                    abs($sortedDbSims[$i] - $sortedGtSims[$i]),
+                    "Similarity mismatch at rank $i: DB={$sortedDbSims[$i]} vs GT={$sortedGtSims[$i]}"
+                );
+            }
+
+            echo "  ✓ Ground truth match for top-{$dbTopCount}\n\n";
+        }
 
         // Clean up test data
         $this->cleanupVectorData($vectorTable);

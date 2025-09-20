@@ -63,6 +63,18 @@ class VectorTable
             'mysql'   => ['min_version' => '8.0.17'],
             'mariadb' => ['min_version' => '10.3.16'],
         ],
+
+        // Binary bitwise string semantics for ^, |, &, ~ and BIT_COUNT over binary strings.
+        // MySQL 8.0+ permits binary string type arguments for bit functions/operators and returns a value of like type.
+        // Docs:
+        //   - MySQL 8.0 Reference: https://dev.mysql.com/doc/refman/8.0/en/bit-functions.html
+        //   - MySQL 8.0.0 release note introducing the change: https://dev.mysql.com/doc/relnotes/mysql/8.0/en/news-8-0-0.html
+        // MariaDB 10.x/11.x/12.x coerce to numeric (no binary-string semantics):
+        //   - Bit functions KB: https://mariadb.com/kb/en/bit-functions-and-operators/
+        'BinaryBitwiseStringOps' => [
+            'mysql' => ['min_version' => '8.0.0'],
+            // No MariaDB entry: treated as unsupported for this feature
+        ],
     ];
 
     /**
@@ -133,7 +145,7 @@ class VectorTable
      * Check a feature support flag from DB_COMPAT for current server type and version.
      * Returns true iff version >= min_version (inclusive).
      */
-    private function isFeatureSupported(string $feature): bool
+    public function isFeatureSupported(string $feature): bool
     {
         $sv = $this->getServerTypeAndVersion();
         $type = $sv['type'];
@@ -1150,16 +1162,37 @@ class VectorTable
             $params = $wi['params'];
         }
 
-        // Fetch top candidate IDs by Hamming distance (minimize I/O during filesort by keeping buffer size small)
-        $sql = "SELECT id FROM {$escapedTableName}{$whereSql} ORDER BY BIT_COUNT(binary_code ^ UNHEX(?)) LIMIT ?";
+        // Fetch top candidate IDs by Hamming distance (Stage-1)
+        $candidateIds = [];
+        if ($this->isFeatureSupported('BinaryBitwiseStringOps')) {
+            // Native binary-string semantics path (MySQL 8+)
+            $sql = "SELECT id FROM {$escapedTableName}{$whereSql} ORDER BY BIT_COUNT(binary_code ^ UNHEX(?)), id ASC LIMIT ?";
+            $types .= 'si';
+            $params[] = $binaryCode;
+            $params[] = $candidateLimit;
+        } else {
+            // Workaround mode: chunked popcount over all bytes (portable across MySQL 5.7, MariaDB 10/11/12)
+            $codeBytes = (int) ceil($this->dimension / 8);
+            $numChunks = (int) ceil($codeBytes / 8);
+            $orderTerms = [];
+            for ($i = 0; $i < $numChunks; $i++) {
+                $bytePos = $i * 8 + 1; // 1-based in SUBSTR
+                $chunkLen = min(8, $codeBytes - $i * 8);
+                $hexStart = $i * 16; // 16 hex chars per 8 bytes
+                $hexLen = $chunkLen * 2;
+                $rhsHex = substr($binaryCode, $hexStart, $hexLen);
+                $rhsLit = "0x{$rhsHex}";
+                $orderTerms[] = "BIT_COUNT(CAST(CONV(HEX(SUBSTR(binary_code, {$bytePos}, {$chunkLen})),16,10) AS UNSIGNED) ^ {$rhsLit})";
+            }
+            $orderExpr = '(' . implode(' + ', $orderTerms) . ')';
+            $sql = "SELECT id FROM {$escapedTableName}{$whereSql} ORDER BY {$orderExpr}, id ASC LIMIT ?";
+            $types .= 'i';
+            $params[] = $candidateLimit;
+        }
         $statement = $this->mysqli->prepare($sql);
         if (!$statement) {
             throw new \Exception("Failed to prepare search query: " . $this->mysqli->error);
         }
-        $candidateIds = [];
-        $types .= 'si';
-        $params[] = $binaryCode;
-        $params[] = $candidateLimit;
         try {
             $statement->bind_param($types, ...$params);
             if (!$statement->execute()) {

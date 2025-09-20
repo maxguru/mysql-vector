@@ -1150,4 +1150,238 @@ class VectorTableTest extends BaseVectorTest
         $vt->getConnection()->rollback();
     }
 
+    /**
+     * Ground truth popcount of XOR between two equal-length hex strings
+     */
+    private function groundTruthPopcountHexXor(string $hexA, string $hexB): int
+    {
+        if (strlen($hexA) !== strlen($hexB)) {
+            throw new \InvalidArgumentException('Hex strings must be equal length');
+        }
+        $a = hex2bin($hexA);
+        $b = hex2bin($hexB);
+        if ($a === false || $b === false) {
+            throw new \InvalidArgumentException('Invalid hex input');
+        }
+        static $lut = null;
+        if ($lut === null) {
+            $lut = [];
+            for ($i = 0; $i < 256; $i++) {
+                $v = $i; $c = 0;
+                while ($v) { $v &= ($v - 1); $c++; }
+                $lut[$i] = $c;
+            }
+        }
+        $len = strlen($a);
+        $sum = 0;
+        for ($i = 0; $i < $len; $i++) {
+            $sum += $lut[ord($a[$i]) ^ ord($b[$i])];
+        }
+        return $sum;
+    }
+
+    public function testDbBitwise_BinaryXorBitCount_MatchesGroundTruth_SmallDimension(): void
+    {
+        $dim = 16; // 2 bytes of code
+        $vt = $this->makeTable('bitwise_small', $dim);
+
+        // Skip on server versions without native binary bitwise semantics (MySQL 5.7, MariaDB)
+        if (!$vt->isFeatureSupported('BinaryBitwiseStringOps')) {
+            $this->markTestSkipped('Skipping bitwise correctness test: BinaryBitwiseStringOps not supported');
+        }
+
+        $vt->getConnection()->begin_transaction();
+
+        // Stored vector: all positive -> all bits set in first 2 bytes: 0xFFFF
+        $vStored = array_fill(0, $dim, 0.5);
+        $id = $vt->upsert($vStored);
+        $hexStored = $vt->vectorToHex($vt->normalize($vStored));
+
+        // Query vector with alternating signs -> pattern 1010 1010 ... => 0x55 0x55
+        $vQuery = [];
+        for ($i = 0; $i < $dim; $i++) { $vQuery[$i] = ($i % 2 === 0) ? 0.5 : -0.5; }
+        $hexQuery = $vt->vectorToHex($vt->normalize($vQuery));
+
+        // DB-computed distance
+        $tbl = $vt->getVectorTableName();
+        $stmt = self::$mysqli->prepare("SELECT BIT_COUNT(binary_code ^ UNHEX(?)) AS d FROM `{$tbl}` WHERE id = ?");
+        $this->assertNotFalse($stmt, 'Failed to prepare statement');
+        $stmt->bind_param('si', $hexQuery, $id);
+        $this->assertTrue($stmt->execute(), 'Execute failed');
+        $stmt->bind_result($dDb);
+        $this->assertTrue($stmt->fetch(), 'Fetch failed');
+        $stmt->close();
+
+        // Ground truth
+        $dPhp = $this->groundTruthPopcountHexXor($hexStored, $hexQuery);
+
+        // Engines with correct binary-string semantics should pass; MySQL 5.7 will likely FAIL here
+        $this->assertEquals($dPhp, (int)$dDb, 'DB BIT_COUNT(binary_code ^ UNHEX(?)) must match PHP popcount over full code');
+
+        $vt->getConnection()->rollback();
+    }
+
+    public function testDbBitwise_BinaryXorBitCount_MatchesGroundTruth_MaxDimension(): void
+    {
+        $dim = \MHz\MysqlVector\VectorTable::MAX_DIMENSIONS; // max supported dimensions for this schema/engine
+        $vt = $this->makeTable('bitwise_maxdim', $dim);
+
+        // Skip on server versions without native binary bitwise semantics
+        if (!$vt->isFeatureSupported('BinaryBitwiseStringOps')) {
+            $this->markTestSkipped('Skipping bitwise correctness test (MAX_DIMENSIONS): BinaryBitwiseStringOps not supported');
+        }
+
+        $vt->getConnection()->begin_transaction();
+
+        // Stored: all positive (all bits set, last byte 0x7F)
+        $vStored = array_fill(0, $dim, 0.5);
+        $id = $vt->upsert($vStored);
+        $hexStored = $vt->vectorToHex($vt->normalize($vStored));
+
+        // Query: all negative (all bits zero)
+        $vQuery = array_fill(0, $dim, -0.5);
+        $hexQuery = $vt->vectorToHex($vt->normalize($vQuery));
+
+        $tbl = $vt->getVectorTableName();
+        $stmt = self::$mysqli->prepare("SELECT BIT_COUNT(binary_code ^ UNHEX(?)) AS d FROM `{$tbl}` WHERE id = ?");
+        $this->assertNotFalse($stmt, 'Failed to prepare statement');
+        $stmt->bind_param('si', $hexQuery, $id);
+        $this->assertTrue($stmt->execute(), 'Execute failed');
+        $stmt->bind_result($dDb);
+        $this->assertTrue($stmt->fetch(), 'Fetch failed');
+        $stmt->close();
+
+        $dPhp = $this->groundTruthPopcountHexXor($hexStored, $hexQuery);
+        $this->assertEquals($dim, $dPhp, 'Sanity: all-ones vs all-zeros should differ in exactly $dim bits');
+
+        // Expectation: servers with full binary semantics (MySQL 8, MariaDB) match; MySQL 5.7 likely FAILS (returns ~64)
+        $this->assertEquals($dPhp, (int)$dDb, 'DB BIT_COUNT(binary_code ^ UNHEX(?)) must match PHP popcount for MAX_DIMENSIONS');
+
+        $vt->getConnection()->rollback();
+    }
+
+    public function testDbBitwise_DirectLiteral_BinaryVsNumericContexts(): void
+    {
+        // Skip on server versions without native binary bitwise semantics
+        $probe1 = new \MHz\MysqlVector\VectorTable(self::$mysqli, 'probe', 16);
+        if (!$probe1->isFeatureSupported('BinaryBitwiseStringOps')) {
+            $this->markTestSkipped('Skipping direct literal bitwise test: BinaryBitwiseStringOps not supported');
+        }
+
+        // BIT_COUNT on numeric string vs binary string literal
+        $res = self::$mysqli->query("SELECT BIT_COUNT('64') AS n1, BIT_COUNT(_binary '64') AS n2");
+        $this->assertNotFalse($res, 'Query failed');
+        $row = $res->fetch_row();
+        $res->free();
+        $this->assertIsArray($row);
+        $this->assertEquals(1, (int)$row[0], "BIT_COUNT('64') should be 1 (numeric 64 has 1 bit set)");
+        $this->assertEquals(7, (int)$row[1], "BIT_COUNT(_binary '64') should count bits in both bytes '6' and '4' => 7");
+    }
+
+    public function testDbBitwise_DirectLiteral_LongXor(): void
+    {
+        // Skip on server versions without native binary bitwise semantics
+        $probe2 = new \MHz\MysqlVector\VectorTable(self::$mysqli, 'probe', 16);
+        if (!$probe2->isFeatureSupported('BinaryBitwiseStringOps')) {
+            $this->markTestSkipped('Skipping long XOR literal bitwise test: BinaryBitwiseStringOps not supported');
+        }
+
+        // 16-byte halves XOR -> 16 bytes of 0xFF => 16*8 = 128 set bits
+        $sql = "SELECT BIT_COUNT(_binary X'0000000000000000FFFFFFFFFFFFFFFF' ^ X'FFFFFFFFFFFFFFFF0000000000000000') AS d";
+        $res = self::$mysqli->query($sql);
+        $this->assertNotFalse($res, 'Query failed');
+        $row = $res->fetch_row();
+        $res->free();
+        $this->assertIsArray($row);
+        $this->assertEquals(128, (int)$row[0], 'BIT_COUNT over 16-byte XOR should be 128');
+    }
+
+    public function testDbBitwise_WorkaroundChunkedPopcount_MatchesGroundTruth_SmallDimension(): void
+    {
+        $dim = 16; // 2 bytes of code => covered by a single 8-byte chunk but exercise logic
+        $vt = $this->makeTable('bitwise_wrkaround_small', $dim);
+        $vt->getConnection()->begin_transaction();
+
+        // Stored: all positive
+        $vStored = array_fill(0, $dim, 0.5);
+        $id = $vt->upsert($vStored);
+        $hexStored = $vt->vectorToHex($vt->normalize($vStored));
+
+        // Query: alternating signs
+        $vQuery = array_fill(0, $dim, 0.0);
+        for ($i = 0; $i < $dim; $i++) { $vQuery[$i] = ($i % 2 === 0) ? 0.5 : -0.5; }
+        $hexQuery = $vt->vectorToHex($vt->normalize($vQuery));
+
+        // Build chunked popcount expression (matches workaround in Stage-1)
+        $codeBytes = (int) ceil($dim / 8);
+        $numChunks = (int) ceil($codeBytes / 8);
+        $terms = [];
+        for ($i = 0; $i < $numChunks; $i++) {
+            $bytePos = $i * 8 + 1; // 1-based
+            $chunkLen = min(8, $codeBytes - $i * 8);
+            $hexStart = $i * 16; // 16 hex per 8 bytes
+            $hexLen = $chunkLen * 2;
+            $hexChunk = substr($hexQuery, $hexStart, $hexLen);
+            $terms[] = "BIT_COUNT(CAST(CONV(HEX(SUBSTR(binary_code, {$bytePos}, {$chunkLen})),16,10) AS UNSIGNED) ^ CAST(CONV('{$hexChunk}',16,10) AS UNSIGNED))";
+        }
+        $expr = '(' . implode(' + ', $terms) . ')';
+        $tbl = $vt->getVectorTableName();
+        $sql = "SELECT {$expr} AS d FROM `{$tbl}` WHERE id = " . (int)$id;
+        $res = self::$mysqli->query($sql);
+        $this->assertNotFalse($res, 'Workaround chunked popcount query failed');
+        $row = $res->fetch_row();
+        $res->free();
+        $this->assertIsArray($row);
+        $dDb = (int)$row[0];
+
+        // Ground truth over full code
+        $dPhp = $this->groundTruthPopcountHexXor($hexStored, $hexQuery);
+        $this->assertEquals($dPhp, $dDb, 'Workaround chunked popcount must equal Ground truth (small dimension)');
+
+        $vt->getConnection()->rollback();
+    }
+
+    public function testDbBitwise_WorkaroundChunkedPopcount_MatchesGroundTruth_MaxDimension(): void
+    {
+        $dim = \MHz\MysqlVector\VectorTable::MAX_DIMENSIONS;
+        $vt = $this->makeTable('bitwise_wrkaround_maxdim', $dim);
+        $vt->getConnection()->begin_transaction();
+
+        // Stored: all positive
+        $vStored = array_fill(0, $dim, 0.5);
+        $id = $vt->upsert($vStored);
+        $hexStored = $vt->vectorToHex($vt->normalize($vStored));
+
+        // Query: all negative
+        $vQuery = array_fill(0, $dim, -0.5);
+        $hexQuery = $vt->vectorToHex($vt->normalize($vQuery));
+
+        // Build chunked popcount expression
+        $codeBytes = (int) ceil($dim / 8);
+        $numChunks = (int) ceil($codeBytes / 8);
+        $terms = [];
+        for ($i = 0; $i < $numChunks; $i++) {
+            $bytePos = $i * 8 + 1; // 1-based
+            $chunkLen = min(8, $codeBytes - $i * 8);
+            $hexStart = $i * 16; // 16 hex per 8 bytes
+            $hexLen = $chunkLen * 2;
+            $hexChunk = substr($hexQuery, $hexStart, $hexLen);
+            $terms[] = "BIT_COUNT(CAST(CONV(HEX(SUBSTR(binary_code, {$bytePos}, {$chunkLen})),16,10) AS UNSIGNED) ^ CAST(CONV('{$hexChunk}',16,10) AS UNSIGNED))";
+        }
+        $expr = '(' . implode(' + ', $terms) . ')';
+        $tbl = $vt->getVectorTableName();
+        $sql = "SELECT {$expr} AS d FROM `{$tbl}` WHERE id = " . (int)$id;
+        $res = self::$mysqli->query($sql);
+        $this->assertNotFalse($res, 'Workaround chunked popcount (max dim) query failed');
+        $row = $res->fetch_row();
+        $res->free();
+        $this->assertIsArray($row);
+        $dDb = (int)$row[0];
+
+        // Ground truth
+        $dPhp = $this->groundTruthPopcountHexXor($hexStored, $hexQuery);
+        $this->assertEquals($dPhp, $dDb, 'Workaround chunked popcount must equal Ground truth (max dimension)');
+
+        $vt->getConnection()->rollback();
+    }
 }
