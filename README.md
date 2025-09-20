@@ -3,14 +3,24 @@
 ## Overview
 The `VectorTable` class is a PHP implementation designed to facilitate the storage and search of high-dimensional vectors in a MySQL database. This class stores normalized vectors as binary float arrays (VARBINARY) and quantized binary codes (VARBINARY), and uses a two-stage search algorithm for efficient similarity search.
 
-### Computational Efficiency
-The library stores only **normalized vectors** in the database, which provides computational efficiency, eliminating normalization overhead (cosine similarity is simply a dot product of normalized vectors).
+## Features
+- Management of the database vector table (created with ENGINE=InnoDB and ROW_FORMAT=DYNAMIC).
+- Support for multiple vector tables within a single database.
+- Vector operations: insertion, deletion, retrieval, and search by cosine similarity.
+- Support for high-dimensional vectors (up to 15,875 dimensions).
+- Batch insert operations for efficient bulk vector storage.
+- Batch delete operations to remove many vectors efficiently.
+- Optional per-vector `metadata` stored as JSON included in retrieval and search results.
 
-### Search Performance
-Vectors are binary quantized upon insertion into the database to optimize search speed and reranked to improve accuracy using a two-stage algorithm:
-1. Fast filtering using Hamming distance on binary quantized codes
-2. Precise re-ranking using cosine similarity (dot product) on normalized vectors
+## Requirements
+- PHP 7.2 or higher.
+- MySQL 5.7.8 or higher / MariaDB 10.2.7 or higher.
+- Required PHP extensions:
+  - mysqli
+  - json
+  - ctype
 
+## Search Performance
 This library is suitable for datasets up to 1,000,000 vectors. For larger datasets, consider using a dedicated vector database such as [Qdrant](https://qdrant.tech/).
 
 Search Benchmarks (384-dimensional vectors, MySQL 8.0.40):
@@ -22,7 +32,7 @@ Vectors | Time (seconds)
 100000  | 0.0606
 1000000 | 1.3893
 
-### Performance Degradation on MariaDB and MySQL 5.7
+### Search Performance Degradation on MariaDB and MySQL 5.7
 MariaDB's native bitwise XOR operator (^) (as well as one in MySQL 5.7) is limited to 64-bit integers. Unlike MySQL 8.0+ which added support for bit operations on binary string types, MariaDB and MySQL 5.7 still implicitly casts operands to a BIGINT for bitwise operations. Additionally, BIT_COUNT(expr) has similar issues on MariaDB and MySQL 5.7. This means that binary code longer than 64 bits is truncated and the Hamming distance is incorrect. We implement a workaround (chunked popcount fallback) in the library to correctly compute the Hamming distance on MariaDB and MySQL 5.7, however, it has a significant performance overhead.
 
 Search Benchmarks (384-dimensional vectors):
@@ -34,7 +44,17 @@ Vectors | MySQL 5.7.42 | MariaDB 10.2.44
 100000  | 0.2891       | 0.3050
 1000000 | 3.3692       | 3.6693
 
-## Storage Efficiency
+## Implementation Details
+
+### Vector Search
+Vectors are binary quantized upon insertion into the database to optimize search speed and reranked to improve accuracy using a two-stage algorithm:
+1. Fast filtering using Hamming distance on binary quantized codes
+2. Precise re-ranking using cosine similarity (dot product) on normalized vectors
+
+### Computational Efficiency
+The library stores only **normalized vectors** in the database, which provides computational efficiency, eliminating normalization overhead (cosine similarity is simply a dot product of normalized vectors).
+
+### Storage Efficiency
 Normalized vectors are stored as 32-bit IEEE-754 floats (float32) in little-endian order inside the `normalized_vector` VARBINARY column. Round-trip encoding/decoding to and from binary can introduce very small precision differences compared to 64-bit doubles; typical tolerances are around 1e-6 when comparing vectors after storage/retrieval. This precision is sufficient for cosine-similarity/dot-product ranking in typical embedding-based applications and allows significantly smaller storage and better performance than 64-bit doubles. Storing 4 bytes per dimension (instead of 8 bytes) allows 2x higher limit on dimensions and halves storage and network costs, which improves performance for insert, read, and re-ranking, while still maintaining sufficient accuracy for similarity search purposes.
 
 Binary quantized codes are stored in the `binary_code` VARBINARY column. Storage requirements are 1 bit per dimension, so a 384-dimensional vector requires 48 bytes.
@@ -56,23 +76,6 @@ Notes and references:
 - NULL‑bitmap is 1 bit per nullable column, rounded up to a full byte; our schema has three nullable columns: normalized_vector, binary_code, metadata.
 
 While the binary code could theoretically scale to 524,280 bits, the effective limit is governed by the total row size with normalized_vector + binary_code.
-
-## Features
-- Management of the database vector table (created with ENGINE=InnoDB and ROW_FORMAT=DYNAMIC).
-- Support for multiple vector tables within a single database.
-- Vector operations: insertion, deletion, retrieval, and search by cosine similarity.
-- Support for high-dimensional vectors (up to 15,875 dimensions).
-- Batch insert operations for efficient bulk vector storage.
-- Batch delete operations to remove many vectors efficiently.
-- Optional per-vector `metadata` stored as JSON included in retrieval and search results.
-
-## Requirements
-- PHP 7.2 or higher.
-- MySQL 5.7.8 or higher / MariaDB 10.2.7 or higher.
-- Required PHP extensions:
-  - mysqli
-  - json
-  - ctype
 
 ## Installation
 1. Ensure that PHP and MySQL are installed and properly configured on your system.
@@ -299,7 +302,6 @@ This fork of the library (maxguru/mysql-vector) has breaking changes compared to
   - 3.1.0: batchInsert(array $items): void (no longer returns IDs)
   - Note: IDs are no longer returned by batchInsert() to avoid overhead and complexity
   - Action: Update calls to batchInsert() to remove reliance on return value; suggested alternative: use upsert() or store metadata to distinguish vectors
-
 
 ### 3.1.0 → 3.2.0
 
