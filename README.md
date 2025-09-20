@@ -300,6 +300,20 @@ This fork of the library (maxguru/mysql-vector) has breaking changes compared to
   - Note: IDs are no longer returned by batchInsert() to avoid overhead and complexity
   - Action: Update calls to batchInsert() to remove reliance on return value; suggested alternative: use upsert() or store metadata to distinguish vectors
 
+
+### 3.1.0 → 3.2.0
+
+- Maximum dimensions cap adjusted
+  - 3.1.0: MAX_DIMENSIONS = 16,383
+  - 3.2.0: MAX_DIMENSIONS = 15,875, based on more precise InnoDB in‑row size accounting
+  - Action: If you provisioned tables above 15,875 dimensions, seek alternative solutions
+
+- VectorTable constructor signature changed (removed engine argument)
+  - 3.1.0: new VectorTable(mysqli $conn, string $name, int $dimension, string $engine = 'InnoDB')
+  - 3.2.0: new VectorTable(mysqli $conn, string $name, int $dimension)
+  - Tables are now always created with ENGINE=InnoDB
+  - Action: Remove the $engine argument from your VectorTable constructor calls
+
 ## Contributions
 Contributions to this project are welcome. Please ensure that your code adheres to the existing coding standards and includes appropriate tests.
 
