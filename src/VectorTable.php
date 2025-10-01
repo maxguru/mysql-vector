@@ -100,6 +100,15 @@ class VectorTable
     }
 
     /**
+     * Get the mysqli database connection
+     *
+     * @return \mysqli The mysqli connection instance used by this VectorTable
+     */
+    public function getConnection(): \mysqli {
+        return $this->mysqli;
+    }
+
+    /**
      * Escape MySQL identifier using backticks
      *
      * @param string $identifier The identifier to escape
@@ -112,11 +121,21 @@ class VectorTable
         return "`$escaped`";
     }
 
+    /**
+     * Get the full table name used for vector storage
+     *
+     * @return string The table name (base name with '_vectors' suffix)
+     */
     public function getVectorTableName(): string
     {
         return $this->name . '_vectors';
     }
 
+    /**
+     * Get the dimension of vectors stored in this table
+     *
+     * @return int The vector dimension configured for this table instance
+     */
     public function getDimension(): int
     {
         return $this->dimension;
@@ -1449,9 +1468,5 @@ class VectorTable
         if (!$this->mysqli->query($sql)) {
             throw new \Exception("Failed to truncate table: " . $this->mysqli->error);
         }
-    }
-
-    public function getConnection(): \mysqli {
-        return $this->mysqli;
     }
 }

@@ -232,6 +232,9 @@ $byType = $vectorTable->selectByMetadata(['$.content_type' => 'pdf', '$.content_
 // Get table name and dimension
 $tableName = $vectorTable->getVectorTableName();
 $dimension = $vectorTable->getDimension();
+
+// Get maximum supported dimension
+$maxDimension = VectorTable::MAX_DIMENSIONS;
 ```
 
 ## Warning: Breaking changes in 3.x
