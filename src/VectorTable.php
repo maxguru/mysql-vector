@@ -151,6 +151,18 @@ class VectorTable
         if ($this->serverInfo === null) {
             $info = (string)$this->mysqli->server_info;
             $type = (stripos($info, 'mariadb') !== false) ? 'mariadb' : 'mysql';
+            // Strip MariaDB's 5.5.5- version prefix in server_info on older PHP versions
+            // MariaDB 10.x adds a "5.5.5-" prefix to the version string in the MySQL protocol
+            // handshake for replication compatibility with old MySQL/MariaDB 5.x slaves.
+            // See https://jira.mariadb.org/browse/MDEV-4088,
+            // The prefix is always exactly "5.5.5-" (RPL_VERSION_HACK constant in mysql_com.h).
+            // Clients should strip this fake prefix to get the actual server version.
+            // PHP 8.0.16+ and 8.1.3+ strip the prefix automatically; earlier versions do not.
+            // See https://www.php.net/ChangeLog-8.php (GH-7972)
+            if ((PHP_VERSION_ID < 80016 || (PHP_VERSION_ID >= 80100 && PHP_VERSION_ID < 80103))
+                && $type === 'mariadb' && strpos($info, '5.5.5-') === 0) {
+                $info = substr($info, 6);
+            }
             $version = '0.0.0';
             if (preg_match('/(\d+\.\d+\.\d+)/', $info, $m)) {
                 $version = $m[1];
