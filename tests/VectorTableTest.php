@@ -1079,6 +1079,44 @@ class VectorTableTest extends BaseVectorTest
         $this->assertIsInt($newId);
     }
 
+    public function testCount_WithMetadataFilter(): void
+    {
+        $vt = $this->makeTable('count_metadata', $this->dimension, [
+            '$.content_type' => 'ENUM("pdf","doc","txt")',
+            '$.content_id'   => 'INT',
+        ]);
+        $vt->getConnection()->begin_transaction();
+
+        // Insert vectors with different metadata
+        $vt->upsert(array_fill(0, $this->dimension, 0.1), ['content_type' => 'pdf', 'content_id' => 1, 'tag' => 'a']);
+        $vt->upsert(array_fill(0, $this->dimension, 0.2), ['content_type' => 'pdf', 'content_id' => 2, 'tag' => 'b']);
+        $vt->upsert(array_fill(0, $this->dimension, 0.3), ['content_type' => 'doc', 'content_id' => 1, 'tag' => null]); // explicit null
+        $vt->upsert(array_fill(0, $this->dimension, 0.4), ['content_type' => 'txt', 'content_id' => 3]); // tag missing
+        $vt->upsert(array_fill(0, $this->dimension, 0.5), null); // NULL metadata
+
+        // Test count without filter
+        $this->assertEquals(5, $vt->count());
+
+        // Test count with single condition (indexed)
+        $this->assertEquals(2, $vt->count(['$.content_type' => 'pdf']));
+        $this->assertEquals(1, $vt->count(['$.content_type' => 'doc']));
+        $this->assertEquals(1, $vt->count(['$.content_type' => 'txt']));
+
+        // Test count with multiple conditions (indexed)
+        $this->assertEquals(1, $vt->count(['$.content_type' => 'pdf', '$.content_id' => 1]));
+        $this->assertEquals(1, $vt->count(['$.content_type' => 'pdf', '$.content_id' => 2]));
+        $this->assertEquals(0, $vt->count(['$.content_type' => 'pdf', '$.content_id' => 999]));
+
+        // Test count with NULL semantics (matches explicit null, missing path, and NULL metadata)
+        // $.tag => null matches: id3 (explicit null), id4 (missing tag), id5 (NULL metadata)
+        $this->assertEquals(3, $vt->count(['$.tag' => null]));
+
+        // Test count with non-indexed field (fallback to JSON_EXTRACT)
+        $this->assertEquals(2, $vt->count(['$.content_id' => 1]));
+
+        $vt->getConnection()->rollback();
+    }
+
     public function testSearch_MinSimilarityFilter_Basic(): void
     {
         $vt = $this->makeTable('search_min_sim_basic', $this->dimension);

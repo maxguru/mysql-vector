@@ -1088,15 +1088,48 @@ class VectorTable
 
     /**
      * Returns the number of vectors stored in the database
-     * @return int The number of vectors
+     *
+     * @param array|null $conditions Optional metadata filter (AND of equality on JSON path values).
+     *                               When provided, counts only vectors matching the metadata conditions.
+     *                               Follows the same semantics as selectByMetadata() and deleteByMetadata().
+     * @return int The number of vectors (optionally filtered by metadata)
+     * @throws \Exception on SQL errors or invalid input
      */
-    public function count(): int {
+    public function count(?array $conditions = null): int {
         $escapedVectorTableName = $this->escapeIdentifier($this->getVectorTableName());
-        $statement = $this->mysqli->prepare("SELECT COUNT(id) FROM {$escapedVectorTableName}");
+
+        if ($conditions === null || empty($conditions)) {
+            // No filter: count all vectors
+            $statement = $this->mysqli->prepare("SELECT COUNT(id) FROM {$escapedVectorTableName}");
+            if (!$statement) {
+                throw new \Exception($this->mysqli->error);
+            }
+            try {
+                if (!$statement->execute()) {
+                    throw new \Exception("Execute failed: " . $statement->error);
+                }
+                $statement->bind_result($count);
+                $statement->fetch();
+                return (int)$count;
+            } finally {
+                $statement->close();
+            }
+        }
+
+        // With metadata filter: count matching vectors
+        $whereInfo = $this->buildMetadataWhere($conditions);
+        $sql = "SELECT COUNT(id) FROM {$escapedVectorTableName} WHERE {$whereInfo['where']}";
+
+        $statement = $this->mysqli->prepare($sql);
         if (!$statement) {
             throw new \Exception($this->mysqli->error);
         }
         try {
+            $types = $whereInfo['types'];
+            $params = $whereInfo['params'];
+            if ($types !== '') {
+                $statement->bind_param($types, ...$params);
+            }
             if (!$statement->execute()) {
                 throw new \Exception("Execute failed: " . $statement->error);
             }

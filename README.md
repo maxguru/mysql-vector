@@ -220,6 +220,10 @@ foreach ($similarVectors as $result) {
 // Count total vectors in the table
 $totalVectors = $vectorTable->count();
 
+// Count vectors matching specific metadata conditions
+$pdfCount = $vectorTable->count(['$.content_type' => 'pdf']);
+$specificCount = $vectorTable->count(['$.content_type' => 'pdf', '$.content_id' => 123]);
+
 // Select specific vectors by ID (returns metadata if present)
 $vectors = $vectorTable->select([1, 2, 3]);
 
