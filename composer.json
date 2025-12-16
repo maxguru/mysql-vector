@@ -3,7 +3,7 @@
   "description": "Perform vector operations natively on MySQL",
   "type": "library",
   "license": "MIT",
-  "version": "3.2.0",
+  "version": "3.2.1",
   "authors": [
     {
       "name": "Alex R.",
