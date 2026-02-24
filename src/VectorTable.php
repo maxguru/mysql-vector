@@ -782,17 +782,23 @@ class VectorTable
 
     /**
      * Select one or more vectors by id
-     * @param \mysqli $mysqli The mysqli connection
      * @param array $ids The ids of the vectors to select
+     * @param array $orderBy Optional ORDER BY: ['id' => 'ASC', '$.path' => 'DESC']
      * @return array Array of results, each containing:
      *               - 'id' (int)
      *               - 'metadata' (array|null)
      */
-    public function select(array $ids): array {
-
+    public function select(array $ids, array $orderBy = []): array {
         $placeholders = implode(', ', array_fill(0, count($ids), '?'));
         $escapedVectorTableName = $this->escapeIdentifier($this->getVectorTableName());
-        $statement = $this->mysqli->prepare("SELECT id, metadata FROM {$escapedVectorTableName} WHERE id IN ({$placeholders})");
+        $sql = "SELECT id, metadata FROM {$escapedVectorTableName} WHERE id IN ({$placeholders})";
+
+        $orderBySql = $this->buildOrderBy($orderBy);
+        if ($orderBySql !== '') {
+            $sql .= " ORDER BY {$orderBySql}";
+        }
+
+        $statement = $this->mysqli->prepare($sql);
         if (!$statement) {
             throw new \Exception($this->mysqli->error);
         }
@@ -821,20 +827,42 @@ class VectorTable
 
     /**
      * Select all vectors in the table
+     * @param int|null $limit Optional LIMIT
+     * @param int|null $offset Optional OFFSET (requires $limit)
+     * @param array $orderBy Optional ORDER BY: ['id' => 'ASC', '$.path' => 'DESC']
      * @return array Array of results, each containing:
      *               - 'id' (int)
      *               - 'metadata' (array|null)
      */
-    public function selectAll(): array {
-
+    public function selectAll(?int $limit = null, ?int $offset = null, array $orderBy = []): array {
         $escapedVectorTableName = $this->escapeIdentifier($this->getVectorTableName());
-        $statement = $this->mysqli->prepare("SELECT id, metadata FROM {$escapedVectorTableName}");
+        $sql = "SELECT id, metadata FROM {$escapedVectorTableName}";
 
+        $orderBySql = $this->buildOrderBy($orderBy);
+        if ($orderBySql !== '') {
+            $sql .= " ORDER BY {$orderBySql}";
+        }
+
+        $useLimit = $limit !== null && $limit > 0;
+        $useOffset = $useLimit && $offset !== null && $offset > 0;
+        if ($useLimit) {
+            $sql .= ' LIMIT ?';
+        }
+        if ($useOffset) {
+            $sql .= ' OFFSET ?';
+        }
+
+        $statement = $this->mysqli->prepare($sql);
         if (!$statement) {
             throw new \Exception($this->mysqli->error);
         }
 
         try {
+            if ($useLimit && $useOffset) {
+                $statement->bind_param('ii', $limit, $offset);
+            } elseif ($useLimit) {
+                $statement->bind_param('i', $limit);
+            }
             if (!$statement->execute()) {
                 throw new \Exception("Execute failed: " . $statement->error);
             }
@@ -981,6 +1009,49 @@ class VectorTable
     }
 
     /**
+     * Build an ORDER BY clause from an associative array of column/path => direction.
+     *
+     * Accepted keys:
+     *   - 'id': sorts by primary key
+     *   - JSON path (e.g., '$.created_at'): sorts by metadata field
+     *
+     * If a generated column index exists for a JSON path, uses it; otherwise falls back to JSON_EXTRACT.
+     *
+     * @param array $orderBy Associative map of key => direction ('ASC' or 'DESC')
+     * @return string SQL ORDER BY clause (without "ORDER BY" keyword), or empty string if no ordering
+     * @throws \InvalidArgumentException If direction is invalid or JSON path is malformed
+     */
+    private function buildOrderBy(array $orderBy): string
+    {
+        if (empty($orderBy)) {
+            return '';
+        }
+
+        $metadataIndexMap = $this->getMetadataIndexMap();
+        $clauses = [];
+
+        foreach ($orderBy as $key => $direction) {
+            $dir = strtoupper(trim($direction));
+            if ($dir !== 'ASC' && $dir !== 'DESC') {
+                throw new \InvalidArgumentException("Invalid ORDER BY direction: {$direction}");
+            }
+
+            if ($key === 'id') {
+                $clauses[] = "id {$dir}";
+            } elseif (isset($metadataIndexMap[$key])) {
+                $col = $this->escapeIdentifier($metadataIndexMap[$key]['column']);
+                $clauses[] = "{$col} {$dir}";
+            } else {
+                $path = $this->validateJsonPath($key);
+                $escapedPath = $this->mysqli->real_escape_string($path);
+                $clauses[] = "JSON_EXTRACT(metadata, '{$escapedPath}') {$dir}";
+            }
+        }
+
+        return implode(', ', $clauses);
+    }
+
+    /**
      * Select vectors filtered by JSON metadata using simple AND of equality conditions.
      *
      * Input shape: associative array of JSON path => value pairs, e.g.:
@@ -997,19 +1068,30 @@ class VectorTable
      *
      * @param array $conditions Associative map of JSON paths to values (ANDed together)
      * @param int|null $limit Optional LIMIT
+     * @param int|null $offset Optional OFFSET (requires $limit)
+     * @param array $orderBy Optional ORDER BY: ['id' => 'ASC', '$.path' => 'DESC']
      * @return array Array of results, each containing:
      *               - 'id' (int)
      *               - 'metadata' (array|null)
      * @throws \Exception on SQL preparation/errors or invalid input
      */
-    public function selectByMetadata(array $conditions, ?int $limit = null): array {
+    public function selectByMetadata(array $conditions, ?int $limit = null, ?int $offset = null, array $orderBy = []): array {
         $escapedTableName = $this->escapeIdentifier($this->getVectorTableName());
         $whereInfo = $this->buildMetadataWhere($conditions);
         $sql = "SELECT id, metadata FROM {$escapedTableName} WHERE {$whereInfo['where']}";
 
+        $orderBySql = $this->buildOrderBy($orderBy);
+        if ($orderBySql !== '') {
+            $sql .= " ORDER BY {$orderBySql}";
+        }
+
         $useLimit = $limit !== null && $limit > 0;
+        $useOffset = $useLimit && $offset !== null && $offset > 0;
         if ($useLimit) {
             $sql .= ' LIMIT ?';
+        }
+        if ($useOffset) {
+            $sql .= ' OFFSET ?';
         }
 
         $stmt = $this->mysqli->prepare($sql);
@@ -1022,6 +1104,10 @@ class VectorTable
             if ($useLimit) {
                 $types .= 'i';
                 $params[] = $limit;
+            }
+            if ($useOffset) {
+                $types .= 'i';
+                $params[] = $offset;
             }
             if ($types !== '') {
                 $stmt->bind_param($types, ...$params);

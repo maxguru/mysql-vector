@@ -1422,4 +1422,411 @@ class VectorTableTest extends BaseVectorTest
 
         $vt->getConnection()->rollback();
     }
+
+    // =========================================================================
+    // Tests for selectAll() with limit, offset, and orderBy parameters
+    // =========================================================================
+
+    public function testSelectAll_Limit_Basic(): void
+    {
+        $vt = $this->makeTable('selectall_limit', $this->dimension);
+        $vt->getConnection()->begin_transaction();
+
+        for ($i = 0; $i < 10; $i++) {
+            $vt->upsert(array_fill(0, $this->dimension, 0.1 * $i));
+        }
+        $this->assertEquals(10, $vt->count());
+
+        $results = $vt->selectAll(5);
+        $this->assertCount(5, $results);
+
+        $vt->getConnection()->rollback();
+    }
+
+    public function testSelectAll_Limit_ExceedsTotal(): void
+    {
+        $vt = $this->makeTable('selectall_limit_exceed', $this->dimension);
+        $vt->getConnection()->begin_transaction();
+
+        for ($i = 0; $i < 5; $i++) {
+            $vt->upsert(array_fill(0, $this->dimension, 0.1 * $i));
+        }
+
+        $results = $vt->selectAll(100);
+        $this->assertCount(5, $results);
+
+        $vt->getConnection()->rollback();
+    }
+
+    public function testSelectAll_Offset_Basic(): void
+    {
+        $vt = $this->makeTable('selectall_offset', $this->dimension);
+        $vt->getConnection()->begin_transaction();
+
+        $ids = [];
+        for ($i = 0; $i < 10; $i++) {
+            $ids[] = $vt->upsert(array_fill(0, $this->dimension, 0.1 * $i));
+        }
+
+        // Get all ordered by id ASC, then offset by 5
+        $allResults = $vt->selectAll(null, null, ['id' => 'ASC']);
+        $offsetResults = $vt->selectAll(10, 5, ['id' => 'ASC']);
+
+        $this->assertCount(5, $offsetResults);
+        // The offset results should match the last 5 of all results
+        $this->assertEquals($allResults[5]['id'], $offsetResults[0]['id']);
+        $this->assertEquals($allResults[9]['id'], $offsetResults[4]['id']);
+
+        $vt->getConnection()->rollback();
+    }
+
+    public function testSelectAll_Offset_WithoutLimit_Ignored(): void
+    {
+        $vt = $this->makeTable('selectall_offset_nolimit', $this->dimension);
+        $vt->getConnection()->begin_transaction();
+
+        for ($i = 0; $i < 5; $i++) {
+            $vt->upsert(array_fill(0, $this->dimension, 0.1 * $i));
+        }
+
+        // Offset without limit should be ignored (returns all rows)
+        $results = $vt->selectAll(null, 3, ['id' => 'ASC']);
+        $this->assertCount(5, $results);
+
+        $vt->getConnection()->rollback();
+    }
+
+    public function testSelectAll_Pagination_Iteration(): void
+    {
+        $vt = $this->makeTable('selectall_pagination', $this->dimension);
+        $vt->getConnection()->begin_transaction();
+
+        $insertedIds = [];
+        for ($i = 0; $i < 25; $i++) {
+            $insertedIds[] = $vt->upsert(array_fill(0, $this->dimension, 0.01 * $i));
+        }
+        sort($insertedIds);
+
+        // Paginate through all rows with limit=10
+        $collectedIds = [];
+        $offset = 0;
+        $limit = 10;
+        while (true) {
+            $page = $vt->selectAll($limit, $offset, ['id' => 'ASC']);
+            if (empty($page)) {
+                break;
+            }
+            foreach ($page as $row) {
+                $collectedIds[] = $row['id'];
+            }
+            $offset += $limit;
+        }
+
+        $this->assertEquals($insertedIds, $collectedIds);
+
+        $vt->getConnection()->rollback();
+    }
+
+    public function testSelectAll_OrderBy_ById(): void
+    {
+        $vt = $this->makeTable('selectall_orderby_id', $this->dimension);
+        $vt->getConnection()->begin_transaction();
+
+        $ids = [];
+        for ($i = 0; $i < 5; $i++) {
+            $ids[] = $vt->upsert(array_fill(0, $this->dimension, 0.1 * $i));
+        }
+
+        // Order ASC
+        $resultsAsc = $vt->selectAll(null, null, ['id' => 'ASC']);
+        $idsAsc = array_column($resultsAsc, 'id');
+        $expectedAsc = $ids;
+        sort($expectedAsc);
+        $this->assertEquals($expectedAsc, $idsAsc);
+
+        // Order DESC
+        $resultsDesc = $vt->selectAll(null, null, ['id' => 'DESC']);
+        $idsDesc = array_column($resultsDesc, 'id');
+        $expectedDesc = $ids;
+        rsort($expectedDesc);
+        $this->assertEquals($expectedDesc, $idsDesc);
+
+        $vt->getConnection()->rollback();
+    }
+
+    public function testSelectAll_OrderBy_ByIndexedMetadataPath(): void
+    {
+        $vt = $this->makeTable('selectall_orderby_indexed', $this->dimension, [
+            '$.priority' => 'INT'
+        ]);
+        $vt->getConnection()->begin_transaction();
+
+        $vt->upsert(array_fill(0, $this->dimension, 0.1), ['priority' => 3]);
+        $vt->upsert(array_fill(0, $this->dimension, 0.2), ['priority' => 1]);
+        $vt->upsert(array_fill(0, $this->dimension, 0.3), ['priority' => 2]);
+
+        // Order by indexed column ASC
+        $resultsAsc = $vt->selectAll(null, null, ['$.priority' => 'ASC']);
+        $priorities = array_map(fn($r) => $r['metadata']['priority'], $resultsAsc);
+        $this->assertEquals([1, 2, 3], $priorities);
+
+        // Order by indexed column DESC
+        $resultsDesc = $vt->selectAll(null, null, ['$.priority' => 'DESC']);
+        $priorities = array_map(fn($r) => $r['metadata']['priority'], $resultsDesc);
+        $this->assertEquals([3, 2, 1], $priorities);
+
+        $vt->getConnection()->rollback();
+    }
+
+    public function testSelectAll_OrderBy_ByNonIndexedMetadataPath(): void
+    {
+        $vt = $this->makeTable('selectall_orderby_fallback', $this->dimension);
+        $vt->getConnection()->begin_transaction();
+
+        $vt->upsert(array_fill(0, $this->dimension, 0.1), ['score' => 30]);
+        $vt->upsert(array_fill(0, $this->dimension, 0.2), ['score' => 10]);
+        $vt->upsert(array_fill(0, $this->dimension, 0.3), ['score' => 20]);
+
+        // Order by non-indexed path ASC (uses JSON_EXTRACT)
+        $resultsAsc = $vt->selectAll(null, null, ['$.score' => 'ASC']);
+        $scores = array_map(fn($r) => $r['metadata']['score'], $resultsAsc);
+        $this->assertEquals([10, 20, 30], $scores);
+
+        $vt->getConnection()->rollback();
+    }
+
+    public function testSelectAll_OrderBy_MultipleColumns(): void
+    {
+        $vt = $this->makeTable('selectall_orderby_multi', $this->dimension, [
+            '$.category' => 'VARCHAR(50)'
+        ]);
+        $vt->getConnection()->begin_transaction();
+
+        $id1 = $vt->upsert(array_fill(0, $this->dimension, 0.1), ['category' => 'A', 'seq' => 2]);
+        $id2 = $vt->upsert(array_fill(0, $this->dimension, 0.2), ['category' => 'B', 'seq' => 1]);
+        $id3 = $vt->upsert(array_fill(0, $this->dimension, 0.3), ['category' => 'A', 'seq' => 1]);
+
+        // Order by category ASC, then id DESC
+        $results = $vt->selectAll(null, null, ['$.category' => 'ASC', 'id' => 'DESC']);
+        $resultIds = array_column($results, 'id');
+
+        // A rows first (id3, id1 in DESC order), then B row (id2)
+        $this->assertEquals([$id3, $id1, $id2], $resultIds);
+
+        $vt->getConnection()->rollback();
+    }
+
+    public function testSelectAll_OrderBy_WithLimitOffset(): void
+    {
+        $vt = $this->makeTable('selectall_orderby_paginate', $this->dimension);
+        $vt->getConnection()->begin_transaction();
+
+        for ($i = 0; $i < 10; $i++) {
+            $vt->upsert(array_fill(0, $this->dimension, 0.01 * $i), ['rank' => $i]);
+        }
+
+        // Get middle 3 rows when ordered by rank DESC (ranks 6, 5, 4)
+        $results = $vt->selectAll(3, 3, ['$.rank' => 'DESC']);
+        $ranks = array_map(fn($r) => $r['metadata']['rank'], $results);
+        $this->assertEquals([6, 5, 4], $ranks);
+
+        $vt->getConnection()->rollback();
+    }
+
+    // =========================================================================
+    // Tests for selectByMetadata() with offset and orderBy parameters
+    // =========================================================================
+
+    public function testSelectByMetadata_Offset_Basic(): void
+    {
+        $vt = $this->makeTable('selectmeta_offset', $this->dimension, [
+            '$.type' => 'VARCHAR(50)'
+        ]);
+        $vt->getConnection()->begin_transaction();
+
+        for ($i = 0; $i < 10; $i++) {
+            $vt->upsert(array_fill(0, $this->dimension, 0.01 * $i), ['type' => 'pdf', 'seq' => $i]);
+        }
+        // Also insert some non-matching rows
+        for ($i = 0; $i < 5; $i++) {
+            $vt->upsert(array_fill(0, $this->dimension, 0.5 + 0.01 * $i), ['type' => 'doc', 'seq' => $i]);
+        }
+
+        // Get pdf rows with offset
+        $allPdf = $vt->selectByMetadata(['$.type' => 'pdf'], null, null, ['$.seq' => 'ASC']);
+        $this->assertCount(10, $allPdf);
+
+        $offsetPdf = $vt->selectByMetadata(['$.type' => 'pdf'], 10, 5, ['$.seq' => 'ASC']);
+        $this->assertCount(5, $offsetPdf);
+        $this->assertEquals($allPdf[5]['id'], $offsetPdf[0]['id']);
+
+        $vt->getConnection()->rollback();
+    }
+
+    public function testSelectByMetadata_Pagination_Iteration(): void
+    {
+        $vt = $this->makeTable('selectmeta_paginate', $this->dimension, [
+            '$.category' => 'VARCHAR(20)'
+        ]);
+        $vt->getConnection()->begin_transaction();
+
+        $insertedIds = [];
+        for ($i = 0; $i < 15; $i++) {
+            $insertedIds[] = $vt->upsert(array_fill(0, $this->dimension, 0.01 * $i), ['category' => 'target', 'idx' => $i]);
+        }
+        // Non-matching
+        for ($i = 0; $i < 5; $i++) {
+            $vt->upsert(array_fill(0, $this->dimension, 0.5), ['category' => 'other']);
+        }
+        sort($insertedIds);
+
+        // Paginate through matching rows
+        $collectedIds = [];
+        $offset = 0;
+        $limit = 4;
+        while (true) {
+            $page = $vt->selectByMetadata(['$.category' => 'target'], $limit, $offset, ['id' => 'ASC']);
+            if (empty($page)) {
+                break;
+            }
+            foreach ($page as $row) {
+                $collectedIds[] = $row['id'];
+            }
+            $offset += $limit;
+        }
+
+        $this->assertEquals($insertedIds, $collectedIds);
+
+        $vt->getConnection()->rollback();
+    }
+
+    public function testSelectByMetadata_OrderBy_Basic(): void
+    {
+        $vt = $this->makeTable('selectmeta_orderby', $this->dimension, [
+            '$.status' => 'VARCHAR(20)',
+            '$.priority' => 'INT'
+        ]);
+        $vt->getConnection()->begin_transaction();
+
+        $vt->upsert(array_fill(0, $this->dimension, 0.1), ['status' => 'pending', 'priority' => 3]);
+        $vt->upsert(array_fill(0, $this->dimension, 0.2), ['status' => 'pending', 'priority' => 1]);
+        $vt->upsert(array_fill(0, $this->dimension, 0.3), ['status' => 'done', 'priority' => 2]);
+        $vt->upsert(array_fill(0, $this->dimension, 0.4), ['status' => 'pending', 'priority' => 2]);
+
+        // Order pending items by priority
+        $results = $vt->selectByMetadata(['$.status' => 'pending'], null, null, ['$.priority' => 'ASC']);
+        $this->assertCount(3, $results);
+        $priorities = array_map(fn($r) => $r['metadata']['priority'], $results);
+        $this->assertEquals([1, 2, 3], $priorities);
+
+        $vt->getConnection()->rollback();
+    }
+
+    public function testSelectByMetadata_OrderBy_WithLimitOffset(): void
+    {
+        $vt = $this->makeTable('selectmeta_orderby_page', $this->dimension, [
+            '$.type' => 'VARCHAR(20)'
+        ]);
+        $vt->getConnection()->begin_transaction();
+
+        for ($i = 0; $i < 10; $i++) {
+            $vt->upsert(array_fill(0, $this->dimension, 0.01 * $i), ['type' => 'item', 'rank' => $i]);
+        }
+
+        // Get items 3-5 when ordered by rank DESC (ranks 6, 5, 4)
+        $results = $vt->selectByMetadata(['$.type' => 'item'], 3, 3, ['$.rank' => 'DESC']);
+        $ranks = array_map(fn($r) => $r['metadata']['rank'], $results);
+        $this->assertEquals([6, 5, 4], $ranks);
+
+        $vt->getConnection()->rollback();
+    }
+
+    // =========================================================================
+    // Tests for select() with orderBy parameter
+    // =========================================================================
+
+    public function testSelect_OrderBy_ById(): void
+    {
+        $vt = $this->makeTable('select_orderby_id', $this->dimension);
+        $vt->getConnection()->begin_transaction();
+
+        $ids = [];
+        for ($i = 0; $i < 5; $i++) {
+            $ids[] = $vt->upsert(array_fill(0, $this->dimension, 0.1 * $i));
+        }
+
+        // Select subset and order DESC
+        $subset = [$ids[0], $ids[2], $ids[4]];
+        $results = $vt->select($subset, ['id' => 'DESC']);
+        $resultIds = array_column($results, 'id');
+
+        $expected = $subset;
+        rsort($expected);
+        $this->assertEquals($expected, $resultIds);
+
+        $vt->getConnection()->rollback();
+    }
+
+    public function testSelect_OrderBy_ByMetadataPath(): void
+    {
+        $vt = $this->makeTable('select_orderby_meta', $this->dimension, [
+            '$.priority' => 'INT'
+        ]);
+        $vt->getConnection()->begin_transaction();
+
+        $id1 = $vt->upsert(array_fill(0, $this->dimension, 0.1), ['priority' => 3, 'name' => 'C']);
+        $id2 = $vt->upsert(array_fill(0, $this->dimension, 0.2), ['priority' => 1, 'name' => 'A']);
+        $id3 = $vt->upsert(array_fill(0, $this->dimension, 0.3), ['priority' => 2, 'name' => 'B']);
+        $vt->upsert(array_fill(0, $this->dimension, 0.4), ['priority' => 4, 'name' => 'D']); // not selected
+
+        // Select subset and order by indexed metadata
+        $results = $vt->select([$id1, $id2, $id3], ['$.priority' => 'ASC']);
+        $priorities = array_map(fn($r) => $r['metadata']['priority'], $results);
+        $this->assertEquals([1, 2, 3], $priorities);
+
+        // Order by non-indexed metadata
+        $results = $vt->select([$id1, $id2, $id3], ['$.name' => 'DESC']);
+        $names = array_map(fn($r) => $r['metadata']['name'], $results);
+        $this->assertEquals(['C', 'B', 'A'], $names);
+
+        $vt->getConnection()->rollback();
+    }
+
+    // =========================================================================
+    // Tests for orderBy error handling
+    // =========================================================================
+
+    public function testOrderBy_InvalidDirection_Throws(): void
+    {
+        $vt = $this->makeTable('orderby_invalid_dir', $this->dimension);
+        $vt->getConnection()->begin_transaction();
+
+        $vt->upsert(array_fill(0, $this->dimension, 0.1));
+
+        try {
+            $vt->selectAll(null, null, ['id' => 'RANDOM']);
+            $this->fail('Expected InvalidArgumentException for invalid ORDER BY direction');
+        } catch (\InvalidArgumentException $e) {
+            $this->assertStringContainsString('Invalid ORDER BY direction', $e->getMessage());
+        }
+
+        $vt->getConnection()->rollback();
+    }
+
+    public function testOrderBy_InvalidJsonPath_Throws(): void
+    {
+        $vt = $this->makeTable('orderby_invalid_path', $this->dimension);
+        $vt->getConnection()->begin_transaction();
+
+        $vt->upsert(array_fill(0, $this->dimension, 0.1), ['field' => 'value']);
+
+        try {
+            $vt->selectAll(null, null, ['field' => 'ASC']); // missing '$.' prefix
+            $this->fail('Expected InvalidArgumentException for invalid JSON path');
+        } catch (\InvalidArgumentException $e) {
+            $this->assertStringContainsString('JSON path', $e->getMessage());
+        }
+
+        $vt->getConnection()->rollback();
+    }
 }

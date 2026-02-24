@@ -11,6 +11,7 @@ The `VectorTable` class is a PHP implementation designed to facilitate the stora
 - Batch insert operations for efficient bulk vector storage.
 - Batch delete operations to remove many vectors efficiently.
 - Optional per-vector `metadata` stored as JSON included in retrieval and search results.
+- Flexible ordering and pagination for efficient iteration and batch processing.
 
 ## Requirements
 - PHP 7.2 or higher.
@@ -216,6 +217,16 @@ foreach ($similarVectors as $result) {
 ```
 
 ### Additional Operations
+
+The library provides several methods for counting, selecting, and iterating over vectors:
+
+- `count(?array $conditions = null)`: Returns the total number of vectors, optionally filtered by metadata conditions.
+- `select(array $ids, array $orderBy = [])`: Retrieves vectors by their IDs. Returns `id` and `metadata` for each vector. Results can be ordered by `id` or metadata JSON paths.
+- `selectAll(?int $limit = null, ?int $offset = null, array $orderBy = [])`: Retrieves all vectors with optional pagination and ordering. Use `$limit` and `$offset` for batch processing.
+- `selectByMetadata(array $conditions, ?int $limit = null, ?int $offset = null, array $orderBy = [])`: Retrieves vectors matching metadata conditions (AND of equalities on JSON paths). Supports pagination and ordering.
+
+The `$orderBy` parameter accepts an associative array mapping column names or JSON paths to sort direction (`'ASC'` or `'DESC'`). Use `'id'` to order by primary key, or JSON paths like `'$.created_at'` to order by metadata fields. If a generated column index exists for a JSON path, it will be used for efficient sorting; otherwise, the library falls back to `JSON_EXTRACT`.
+
 ```php
 // Count total vectors in the table
 $totalVectors = $vectorTable->count();
@@ -224,14 +235,30 @@ $totalVectors = $vectorTable->count();
 $pdfCount = $vectorTable->count(['$.content_type' => 'pdf']);
 $specificCount = $vectorTable->count(['$.content_type' => 'pdf', '$.content_id' => 123]);
 
-// Select specific vectors by ID (returns metadata if present)
+// Select specific vectors by ID (returns id and metadata)
 $vectors = $vectorTable->select([1, 2, 3]);
+
+// Select specific vectors by ID with ordering
+$vectors = $vectorTable->select([1, 2, 3], ['id' => 'DESC']);
+$vectors = $vectorTable->select([1, 2, 3], ['$.priority' => 'DESC', 'id' => 'ASC']);
 
 // Select all vectors
 $allVectors = $vectorTable->selectAll();
 
-// Filter by metadata by JSON path values
+// Select all vectors with ordering and pagination
+$page1 = $vectorTable->selectAll(100, 0, ['id' => 'ASC']);    // first 100 rows
+$page2 = $vectorTable->selectAll(100, 100, ['id' => 'ASC']);  // next 100 rows
+
+// Filter by metadata (AND of equality conditions on JSON paths)
 $byType = $vectorTable->selectByMetadata(['$.content_type' => 'pdf', '$.content_id' => 456]);
+
+// Filter by metadata with ordering and pagination
+$page1 = $vectorTable->selectByMetadata(
+    ['$.content_type' => 'pdf'],
+    50,   // limit
+    0,    // offset
+    ['$.created_at' => 'DESC', 'id' => 'ASC']
+);
 
 // Get table name and dimension
 $tableName = $vectorTable->getVectorTableName();
